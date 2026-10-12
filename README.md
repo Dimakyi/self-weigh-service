@@ -167,8 +167,34 @@ curl -X POST localhost:8000/weigh -H "X-Kiosk-Key: dev-kiosk-key" -H "Content-Ty
 # airline reads its own records
 curl localhost:8000/airlines/me/transactions -H "X-Api-Key: <key from creation>"
 ```
+### Local setup without Docker
 
-Local without Docker: `pip install -r requirements.txt && uvicorn app.main:app --reload`, then `pytest`.
+Python 3.12 is recommended.
+
+```powershell
+# Create a virtual environment
+py -3.12 -m venv .venv
+
+# Activate it in Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+
+# Install dependencies
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+# Start the API
+python -m uvicorn app.main:app --reload
+```
+
+Open `http://127.0.0.1:8000/docs` to explore the API.
+
+Run the test suite in a separate terminal, or stop the server first:
+
+```powershell
+python -m pytest
+```
+
+If PowerShell blocks virtual-environment activation, see the [official Python documentation](https://docs.python.org/3.12/library/venv.html) for alternatives.
 
 ## Config
 
