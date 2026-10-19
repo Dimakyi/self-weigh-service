@@ -104,3 +104,21 @@ def test_api_key_is_not_stored_in_plaintext(client, make_airline):
     with SessionLocal() as db:
         row = db.scalar(select(Airline))
         assert row.api_key_hash != a["api_key"] and len(row.api_key_hash) == 64
+
+
+def test_inactive_airline_key_is_rejected(client, make_airline):
+    from sqlalchemy import select
+    from app.db import SessionLocal
+    from app.models import Airline
+
+    airline = make_airline("SA")
+    with SessionLocal() as db:
+        row = db.scalar(select(Airline))
+        row.active = False
+        db.commit()
+
+    response = client.get(
+        "/airlines/me",
+        headers={"X-Api-Key": airline["api_key"]},
+    )
+    assert response.status_code == 401

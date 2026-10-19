@@ -49,6 +49,23 @@ def test_waiver_needs_a_real_reason(client, make_airline):
     assert waive(client, tx, staff, reason="ok").status_code == 422
 
 
+def test_inactive_staff_key_cannot_waive_fee(client, make_airline):
+    from sqlalchemy import select
+    from app.models import Staff
+
+    make_airline("SA")
+    staff = make_staff(client)
+    tx = overweight(client)
+
+    with SessionLocal() as db:
+        row = db.scalar(select(Staff))
+        row.active = False
+        db.commit()
+
+    response = waive(client, tx, staff)
+    assert response.status_code == 401
+
+
 def test_waiver_above_limit_refused(client, make_airline):
     make_airline("SA")
     staff = make_staff(client, limit=10_000)
