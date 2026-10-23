@@ -1,10 +1,11 @@
 """Self Weigh Service API: weigh -> (pay) -> proceed to bag drop, separated per airline."""
+
 import json
 from datetime import date, datetime, timezone
 from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -75,6 +76,24 @@ class PayRequest(BaseModel):
     method: PaymentMethod
     amount_cents: int
 
+class PassengerVerificationRequest(BaseModel):
+    passenger_name: str = Field(min_length=1, max_length=100)
+    boarding_pass_name: str = Field(min_length=1, max_length=100)
+    flight_number: str = Field(min_length=1, max_length=10)
+    boarding_pass_flight: str = Field(min_length=1, max_length=10)
+
+    @field_validator(
+        "passenger_name",
+        "boarding_pass_name",
+        "flight_number",
+        "boarding_pass_flight",
+    )
+    @classmethod
+    def reject_blank_details(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field must not be blank")
+        return value
 
 class BalanceOut(BaseModel):
     airline_id: int
@@ -183,6 +202,29 @@ class TransactionOut(BaseModel):
     message: str
     model_config = {"from_attributes": True}
 
+# ---------- kiosk: simulated passenger verification ----------
+@app.post(
+    "/passenger/verify",
+    dependencies=[Depends(require_kiosk)],
+)
+def verify_passenger(body: PassengerVerificationRequest):
+    matched = (
+        body.passenger_name.casefold() == body.boarding_pass_name.casefold()
+        and body.flight_number.upper() == body.boarding_pass_flight.upper()
+    )
+
+    return {
+        "matched": matched,
+        "mode": "SIMULATION",
+        "message": (
+            "Passenger name and flight details match in simulation. "
+            "This is not official identity verification."
+            if matched
+            else
+            "Passenger name or flight details do not match in simulation. "
+            "This is not official identity verification."
+        ),
+    }
 
 # ---------- admin: manage airlines ----------
 @app.post("/airlines", response_model=AirlineCreated, status_code=201, dependencies=[Depends(require_admin)])
