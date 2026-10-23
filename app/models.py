@@ -1,7 +1,11 @@
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean, Date, DateTime, Enum, Float, ForeignKey, Index,
+    Integer, String, Text, UniqueConstraint,
+)
+
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -135,3 +139,33 @@ class CashReconciliation(Base):
     counted_by: Mapped[str] = mapped_column(String(60))
     notes: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class OutboxEvent(Base):
+    """Durable events waiting to be delivered to downstream systems."""
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index("ix_outbox_pending", "published_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    airline_id: Mapped[int] = mapped_column(
+        ForeignKey("airlines.id"), index=True
+    )
+
+    transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transactions.id"), nullable=True
+    )
+
+    event_type: Mapped[str] = mapped_column(String(60))
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now
+    )
+
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
