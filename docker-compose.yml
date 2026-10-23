@@ -12,6 +12,7 @@ services:
   api:
     build: .
     environment:
+      APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql+psycopg2://selfweigh:selfweigh@db:5432/selfweigh
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
       KIOSK_API_KEY: ${KIOSK_API_KEY:-dev-kiosk-key}

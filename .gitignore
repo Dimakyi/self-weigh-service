@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
 .venv/
+.venv312/
 .pytest_cache/
 *.db
-.env/
-.venv312/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
