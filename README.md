@@ -9,8 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 66 automated tests passed locally, with 1 warning. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
-
+**Testing:** 72 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 ## The problem
 
 Overweight bags are usually discovered at the bag drop counter. The passenger then repacks, moves items
@@ -200,8 +199,9 @@ Start the application with Docker Compose:
 ```powershell
 docker compose up --build
 ```
-Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. The interactive documentation lets you explore endpoints and send requests without needing `curl`.
+This Compose configuration uses development defaults and is intended for local testing. Do not expose it as a production deployment. Stop the services with `Ctrl+C`, then run `docker compose down` when you have finished.
 
+Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. The interactive documentation lets you explore endpoints and send requests without needing `curl`.
 ### Option 2: Test with PowerShell
 
 Create an airline using PowerShell's `Invoke-RestMethod`:
@@ -297,13 +297,22 @@ python -m pytest
 
 If PowerShell blocks virtual-environment activation, see the [official Python documentation](https://docs.python.org/3.12/library/venv.html) for alternatives.
 
-## Config
+## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_URL` | SQLite file | Postgres in Docker Compose |
-| `ADMIN_API_KEY` / `KIOSK_API_KEY` | dev values | **Change outside local development** |
-| `TIMEZONE` | Africa/Johannesburg | Month and day boundaries for statements and reconciliation |
-| `DEFAULT_ALLOWANCE_KG`, `DEFAULT_MAX_BAG_KG`, `DEFAULT_EXCESS_RATE_CENTS_PER_KG` | 23 / 32 / 15000 | Used when an airline is created without its own values |
+| `APP_ENV` | `development` | Set to `production` to enable production API-key safeguards |
+| `DATABASE_URL` | SQLite file | Docker Compose configures PostgreSQL for the API |
+| `ADMIN_API_KEY` / `KIOSK_API_KEY` | Development keys | Must be replaced with non-default values in production |
+| `TIMEZONE` | `Africa/Johannesburg` | Month and day boundaries for statements and cash reconciliation |
+| `DEFAULT_ALLOWANCE_KG` | `23` | Default allowance for newly created airlines |
+| `DEFAULT_MAX_BAG_KG` | `32` | Default maximum bag weight |
+| `DEFAULT_EXCESS_RATE_CENTS_PER_KG` | `15000` | Illustrative default excess fee rate |
 
-The schema is created automatically for now. Migrations (Alembic) come later, so delete any old dev database after pulling a new step.
+### Production configuration safeguards
+
+When `APP_ENV=production`, the application refuses to start if either `ADMIN_API_KEY` or `KIOSK_API_KEY` still has its built-in development value. Supply non-default values through the deployment environment.
+
+**Important:** the Docker Compose file currently supplies development API keys and hard-coded PostgreSQL example credentials by default. These are for local demonstration only, not production deployment. A production deployment must use securely managed secrets, appropriate database credentials and network access controls, and a reviewed deployment configuration. Changing the API keys alone does not make the service production-ready.
+
+The application creates its database schema automatically for now. Database migrations (Alembic) are planned for later development.
