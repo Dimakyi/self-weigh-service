@@ -7,6 +7,10 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 > Concept project. Allowances, rates and limits are illustrative defaults, not real airline or airport tariffs.
 
+**Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
+
+**Testing:** 61 automated tests passed locally, with 1 warning. Run the suite with `.\.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+
 ## The problem
 
 Overweight bags are usually discovered at the bag drop counter. The passenger then repacks, moves items
@@ -45,10 +49,10 @@ currency, collector) and every transaction carries an `airline_id`.
 
 | Role | Header | Can do |
 |---|---|---|
-| Admin (operator) | `X-Admin-Key` | create and list airlines |
-| Kiosk | `X-Kiosk-Key` | weigh and pay for any airline |
-| Airline | `X-Api-Key` | read **only its own** transactions, ledger and audit log |
-| Staff | `X-Staff-Key` | waive a fee (personal key, reason required, per-person limit) |
+| Admin (operator) | `X-Admin-Key` | Manage airlines and staff; view airline balances and ledgers; record payouts; generate statements; verify audit chains; reconcile cash |
+| Kiosk | `X-Kiosk-Key` | Weigh bags and record payments for any airline |
+| Airline | `X-Api-Key` | Read its own profile, balance, ledger, transactions, audit log and statements |
+| Staff | `X-Staff-Key` | Waive eligible fees using a personal key, with a required reason and per-person limit |
 
 - An airline's key is shown once at creation; only its SHA-256 hash is stored.
 - Asking for another airline's transaction returns 404, the same as a missing one.
@@ -148,25 +152,90 @@ lists problem days. Waived and card or mobile payments are excluded.
 Assumption: the kiosk takes exact cash or returns change, so cash in the box equals the fee. Real change
 handling would need more design.
 
-**Not built:** a dispute workflow for statement lines (airlines currently raise disputes outside the system,
-and corrections would appear on a later statement), refunds, and per-kiosk cash tracking.
+**Known limits and not yet built:**
+
+- **Disputes:** No in-system workflow for challenging statement lines; airlines must raise disputes externally.
+- **Refunds:** No refund workflow is implemented.
+- **Per-kiosk cash tracking:** Reconciliation compares a combined total across all kiosks rather than tracking each kiosk separately.
 
 ## Try it
 
-```bash
-docker compose up --build        # http://localhost:8000/docs
+### Option 1: Interactive API documentation (recommended)
 
-# create an airline (returns its api_key once)
-curl -X POST localhost:8000/airlines -H "X-Admin-Key: dev-admin-key" -H "Content-Type: application/json" \
-  -d '{"iata_code":"SA","name":"Example Air","allowance_kg":23,"excess_rate_cents_per_kg":15000}'
+Start the application with Docker Compose:
 
-# kiosk weighs a bag
-curl -X POST localhost:8000/weigh -H "X-Kiosk-Key: dev-kiosk-key" -H "Content-Type: application/json" \
-  -d '{"airline_code":"SA","weight_kg":25.2,"flight_number":"SA123"}'
-
-# airline reads its own records
-curl localhost:8000/airlines/me/transactions -H "X-Api-Key: <key from creation>"
+```powershell
+docker compose up --build
 ```
+
+Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. The interactive documentation lets you explore endpoints and send requests without needing `curl`.
+
+### Option 2: Test with PowerShell
+
+Create an airline using PowerShell's `Invoke-RestMethod`:
+
+```powershell
+$headers = @{
+    "X-Admin-Key" = "dev-admin-key"
+}
+
+$body = @{
+    iata_code = "SA"
+    name = "Example Air"
+    allowance_kg = 23
+    excess_rate_cents_per_kg = 15000
+} | ConvertTo-Json
+
+$airline = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/airlines" `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+
+$airline
+```
+
+The response includes the airline's API key. Store it securely; the key is shown only once.
+
+Use the kiosk key to weigh a bag:
+
+```powershell
+$headers = @{
+    "X-Kiosk-Key" = "dev-kiosk-key"
+}
+
+$body = @{
+    airline_code = "SA"
+    weight_kg = 25.2
+    flight_number = "SA123"
+} | ConvertTo-Json
+
+$transaction = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/weigh" `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+
+$transaction
+```
+
+Read the airline's own transactions using the key returned during airline creation:
+
+```powershell
+$headers = @{
+    "X-Api-Key" = "YOUR_AIRLINE_API_KEY"
+}
+
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/airlines/me/transactions" `
+    -Headers $headers
+```
+
+Replace `YOUR_AIRLINE_API_KEY` with the actual key from the airline-creation response. The example development keys are for local development only.
+
 ### Local setup without Docker
 
 Python 3.12 is recommended.
