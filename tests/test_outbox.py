@@ -59,3 +59,42 @@ def test_enqueue_event_does_not_commit_automatically(client, make_airline):
 
     with SessionLocal() as db:
         assert db.get(OutboxEvent, event_id) is None
+
+
+def test_weigh_endpoint_persists_matching_outbox_event(client, make_airline):
+    airline = make_airline("WX")
+
+    response = client.post(
+        "/weigh",
+        headers={"X-Kiosk-Key": "test-kiosk"},
+        json={
+            "airline_code": "WX",
+            "weight_kg": 25.2,
+            "flight_number": "WX123",
+        },
+    )
+
+    assert response.status_code == 201
+    tx = response.json()
+
+    with SessionLocal() as db:
+        events = (
+            db.query(OutboxEvent)
+            .filter_by(
+                airline_id=airline["id"],
+                transaction_id=tx["id"],
+                event_type="TRANSACTION_WEIGHED",
+            )
+            .all()
+        )
+
+    assert len(events) == 1
+    assert json.loads(events[0].payload) == {
+        "transaction_id": tx["id"],
+        "weight_kg": 25.2,
+        "fee_cents": tx["fee_cents"],
+        "status": tx["status"],
+        "flight_number": "WX123",
+    }
+    assert events[0].published_at is None
+    assert events[0].attempts == 0
