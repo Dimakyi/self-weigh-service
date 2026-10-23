@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 61 automated tests passed locally, with 1 warning. Run the suite with `.\.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 66 automated tests passed locally, with 1 warning. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
@@ -50,7 +50,7 @@ currency, collector) and every transaction carries an `airline_id`.
 | Role | Header | Can do |
 |---|---|---|
 | Admin (operator) | `X-Admin-Key` | Manage airlines and staff; view airline balances and ledgers; record payouts; generate statements; verify audit chains; reconcile cash |
-| Kiosk | `X-Kiosk-Key` | Weigh bags and record payments for any airline |
+| Kiosk | `X-Kiosk-Key` | Verify supplied passenger and boarding-pass details in simulation, weigh bags and record payments for any airline |
 | Airline | `X-Api-Key` | Read its own profile, balance, ledger, transactions, audit log and statements |
 | Staff | `X-Staff-Key` | Waive eligible fees using a personal key, with a required reason and per-person limit |
 
@@ -158,6 +158,39 @@ handling would need more design.
 - **Refunds:** No refund workflow is implemented.
 - **Per-kiosk cash tracking:** Reconciliation compares a combined total across all kiosks rather than tracking each kiosk separately.
 
+## Simulated passenger verification
+
+The kiosk can compare supplied passenger details with the name and flight number entered from a boarding pass. This is a simulated comparison only; it does not contact an airline, validate a real boarding pass, or perform official identity verification.
+
+**Endpoint:** `POST /passenger/verify`
+
+**Authentication:** `X-Kiosk-Key`
+
+Example using PowerShell:
+
+```powershell
+$headers = @{
+    "X-Kiosk-Key" = "dev-kiosk-key"
+}
+
+$body = @{
+    passenger_name = "Test Passenger"
+    boarding_pass_name = "Test Passenger"
+    flight_number = "SA123"
+    boarding_pass_flight = "SA123"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/passenger/verify" `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+```
+A successful comparison returns `matched: true` and `mode: "SIMULATION"`. A name or flight mismatch returns `matched: false`. Missing or invalid kiosk authentication returns HTTP 401, while blank required details return HTTP 422.
+
+This endpoint is a demonstration of the verification workflow, not a production identity-verification service.
+
 ## Try it
 
 ### Option 1: Interactive API documentation (recommended)
@@ -167,7 +200,6 @@ Start the application with Docker Compose:
 ```powershell
 docker compose up --build
 ```
-
 Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. The interactive documentation lets you explore endpoints and send requests without needing `curl`.
 
 ### Option 2: Test with PowerShell
