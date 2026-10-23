@@ -90,6 +90,22 @@ def test_admin_endpoints_need_admin_key(client):
     assert client.post("/airlines", headers=KIOSK, json={"iata_code": "SA", "name": "x"}).status_code == 401
 
 
+def test_staff_management_endpoints_need_admin_key(client):
+    staff_data = {
+        "staff_code": "S099",
+        "name": "Test Staff",
+        "waiver_limit_cents": 100_000,
+    }
+
+    assert client.get("/staff").status_code == 401
+    assert client.get("/staff", headers=KIOSK).status_code == 401
+
+    assert client.post("/staff", json=staff_data).status_code == 401
+    assert client.post(
+        "/staff", headers=KIOSK, json=staff_data
+    ).status_code == 401
+
+
 def test_airline_endpoints_need_valid_airline_key(client, make_airline):
     make_airline("SA")
     assert client.get("/airlines/me").status_code == 401
