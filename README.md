@@ -9,7 +9,8 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 72 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 85 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+
 ## The problem
 
 Overweight bags are usually discovered at the bag drop counter. The passenger then repacks, moves items
@@ -31,7 +32,12 @@ This repo is the software side of that idea. The scale is simulated, so no hardw
 - [x] **Step 2:** settlement ledger and `collector` setting (airport collects vs airline collects directly)
 - [x] **Step 3:** hash-chained audit log and authorised fee waivers
 - [x] **Step 4:** monthly airline statements (PDF summary + CSV detail) and cash reconciliation
-- [ ] **Step 5:** Kafka events and an operations dashboard
+- [ ] **Step 5:** events and an operations dashboard
+  - [x] 5a: transactional outbox and a lease-based publisher (see [Event outbox](#event-outbox))
+  - [ ] 5b: queue events for payments, waivers, payouts and statements (only `TRANSACTION_WEIGHED` is queued today)
+  - [ ] 5c: a worker process that runs the publisher, and a Kafka producer plus broker in Docker Compose
+  - [ ] 5d: retry limits and dead-letter handling for events that keep failing
+  - [ ] 5e: operations dashboard
 
 ## Flow
 
@@ -156,6 +162,18 @@ handling would need more design.
 - **Disputes:** No in-system workflow for challenging statement lines; airlines must raise disputes externally.
 - **Refunds:** No refund workflow is implemented.
 - **Per-kiosk cash tracking:** Reconciliation compares a combined total across all kiosks rather than tracking each kiosk separately.
+
+## Event outbox
+
+Downstream systems (the planned Kafka feed and operations dashboard) need to hear about what happens at the kiosk without the API ever claiming something happened that was not saved. The service uses a **transactional outbox**:
+
+- **Written with the action.** `enqueue_event` adds a row to `outbox_events` in the caller's own database transaction. The transaction, its audit event and its outbox event are saved in one commit, or none of them are.
+- **Delivered separately.** `publish_pending(deliver)` claims pending events, hands each one to a delivery function and records the outcome. The delivery function is a parameter, so the broker can be swapped in later without touching the outbox.
+- **Safe with several workers.** Claims are short transactions. On PostgreSQL they use `FOR UPDATE SKIP LOCKED`, so two workers don't take the same event. Each claim has a lease (default 60 seconds) and a unique claim token, so a crashed worker's events become available again once the lease expires, and a worker that finishes late cannot overwrite the result of whoever took over.
+- **Failures are recorded.** A failed delivery increments `attempts`, stores `last_error` and leaves the event pending for another try.
+- **At-least-once.** An event can be delivered more than once (for example, if a worker dies after delivering but before recording success), so **consumers must deduplicate by event ID**.
+
+**Current state:** only `TRANSACTION_WEIGHED` (from `POST /weigh`) is queued. Nothing runs `publish_pending` yet, and there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml`. Failed events are retried indefinitely, with no backoff, retry cap or dead-letter handling. Payment, waiver, payout and statement events are not queued yet.
 
 ## Simulated passenger verification
 

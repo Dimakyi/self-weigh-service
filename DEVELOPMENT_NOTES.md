@@ -46,16 +46,16 @@ The main programming language used to implement the service.
 The web framework used to define API endpoints and handle requests.
 
 ### PostgreSQL
-The intended relational database technology for persistent application data. Database configuration and actual use should be verified against the current implementation.
+The relational database used when running through Docker Compose (PostgreSQL 16). Local development without Docker uses a SQLite file by default; `DATABASE_URL` selects the database. Some behaviour differs by database: for example, the outbox claim query uses `SKIP LOCKED` on PostgreSQL only.
 
 ### SQLAlchemy
-The Python SQL toolkit and ORM used or intended for database interaction. Its actual configuration should be checked in the code.
+The Python SQL toolkit and ORM used for all database access (SQLAlchemy 2.0 style models in `app/models.py`). Tables are created automatically at startup; Alembic migrations are not set up yet.
 
 ### pytest
 The testing framework used to execute automated tests.
 
 ### Docker
-A tool for packaging and running applications in consistent environments. Docker-based development or deployment should be verified against the current repository configuration.
+A tool for packaging and running applications in consistent environments. The repository has a `Dockerfile` and a `docker-compose.yml` (API plus PostgreSQL). The Compose file uses development keys and hard-coded database credentials, so it is for local use only.
 
 ### Git and GitHub
 Git tracks code changes, while GitHub hosts the repository and its shared history.
@@ -91,7 +91,10 @@ API-key protection should be reviewed for secure storage, rotation, logging, and
 These functions require appropriate validation and financial-integrity checks before production use.
 
 ### Audit Trail
-The project has included work related to a hash-chained audit trail. Its integrity guarantees, coverage of events, and resistance to tampering must be tested before relying on it for formal auditing.
+The project has a hash-chained audit log, one chain per airline, covering weigh, payment, waiver, payout and statement events. It detects tampering but does not prevent it (see the README's "Honest limits"). Its integrity guarantees must be tested further before relying on it for formal auditing.
+
+### Event Outbox
+A transactional outbox (`app/outbox.py`, `app/outbox_publisher.py`) lets the service queue events in the same database transaction as the action that caused them, and deliver them later with a lease-based publisher. Only `TRANSACTION_WEIGHED` is queued so far, and no worker or Kafka broker runs it yet. See the README's "Event outbox" section.
 
 ## 6. Development Environment
 
@@ -137,9 +140,9 @@ Run the automated test suite from the repository directory:
 python -m pytest
 ```
 
-The test suite previously reported:
+The test suite most recently reported locally on Windows using Python 3.12:
 
-`59 passed, 1 warning in 6.18s`
+`85 passed, 1 warning in 26.80s`
 
 This records a test result observed during development. It is not a guarantee that all possible scenarios are tested or that the application is production-ready.
 
@@ -202,21 +205,18 @@ A clean working tree means there are no remaining tracked or untracked changes r
 
 ## 10. Development Milestones
 
-The following milestones have been recorded in the repository's development history:
+The following milestones are recorded in the repository's development history:
 
-- Initial self-weigh service implementation.
-- Added a Git ignore rule for the local Python virtual environment.
-- Improved the README with local setup instructions.
-- Added the `.venv312` environment to `.gitignore`.
+- Initial self-weigh service implementation (`5c6ede0`), including the multi-airline design, settlement ledger, audit log with waivers, statements and cash reconciliation described in the README.
+- Local setup documentation and `.gitignore` rules for the local virtual environment.
+- Project development notes and inactive API-key regression tests.
+- Improved README setup instructions and API examples.
+- Simulated passenger verification (`POST /passenger/verify`), with documentation.
+- Production configuration safeguards (the app refuses to start in production with default keys), with tests and documentation.
+- Tests for staff-management authorisation.
+- Added transactional outbox groundwork for weigh events and a lease-based event publisher (`3c49321`). Other event types, a worker process and Kafka integration remain planned.
 
-The following commit history was previously confirmed:
-
-- `5c6ede0` — Add initial self-weigh service implementation
-- `848ab70` — Ignore local Python virtual environment
-- `d09d5a0` — docs: improve local setup instructions
-- `1966227` — chore: ignore local Python environment
-
-The repository was previously confirmed to be on `main`, up to date with `origin/main`, and clean after the last push. Check Git for the latest state before relying on this historical record.
+Run `git log --oneline` for the full, current history; it is the authority if this list falls behind.
 
 ## 11. Engineering Principles
 
@@ -236,19 +236,21 @@ We will follow these principles throughout development:
 
 Future work should be driven by inspection of the current code, test coverage, and the project's requirements.
 
-Potential areas to investigate include:
+Next steps, in the order they are likely to be tackled (Step 5 of the roadmap):
 
-- Reviewing the API structure and endpoint behaviour.
-- Checking database configuration and persistence.
-- Reviewing authentication and authorisation.
-- Validating baggage-fee calculations.
-- Improving transaction and reconciliation safeguards.
-- Testing audit-trail integrity.
-- Expanding automated test coverage.
-- Reviewing error handling and logging.
-- Improving deployment configuration and secrets management.
-- Documenting API request and response examples.
-- Reviewing operational monitoring, backups, and recovery requirements.
+- Queue outbox events for payments, waivers, payouts and statements (only `TRANSACTION_WEIGHED` is queued today).
+- Add a worker process that runs the publisher, then a Kafka producer and broker in Docker Compose.
+- Add retry limits, backoff and dead-letter handling for events that keep failing.
+- Build the operations dashboard.
+
+Other areas to investigate:
+
+- Alembic database migrations (tables are currently created automatically).
+- Splitting `app/main.py` (about 560 lines) into routers.
+- Refunds and corrections, and mid-period collector changes (both unhandled).
+- Per-kiosk cash tracking (reconciliation uses one combined total).
+- Secrets management and deployment configuration beyond the local Docker Compose setup.
+- Reviewing error handling, logging, monitoring, backups and recovery.
 
 These are development opportunities, not claims that the work has already been completed.
 
