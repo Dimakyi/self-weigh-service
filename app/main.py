@@ -11,8 +11,21 @@ from sqlalchemy.orm import Session
 
 from app import audit, config, ledger, pricing, statement_pdf, statements
 from app.db import Base, engine, get_db
-from app.models import (Airline, AuditEvent, CashReconciliation, Collector, LedgerEntry, LedgerType,
-                        Staff, Statement, Status, Transaction)
+
+from app.models import (
+    Airline,
+    AuditEvent,
+    CashReconciliation,
+    Collector,
+    LedgerEntry,
+    LedgerType,
+    OutboxEvent,
+    Staff,
+    Statement,
+    Status,
+    Transaction,
+)
+
 from app.scale import Scale, SimulatedScale
 from app.security import (current_airline, current_staff, hash_key, new_airline_key,
                           new_staff_key, require_admin, require_kiosk)

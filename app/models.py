@@ -167,5 +167,17 @@ class OutboxEvent(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    claimed_by: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+
+    claim_token: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+
+    claimed_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
