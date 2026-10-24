@@ -318,9 +318,22 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
     tx.status = Status.READY_FOR_DROP
     tx.message = "Payment received. Proceed to bag drop."
     ledger.record_payment(db, db.get(Airline, tx.airline_id), tx)  # same commit: payment + ledger are atomic
+
     audit.append(db, tx.airline_id, "PAYMENT_RECEIVED", "kiosk", tx.id,
                  {"method": req.method.value, "fee_cents": tx.fee_cents})
+    enqueue_event(
+        db,
+        airline_id=tx.airline_id,
+        transaction_id=tx.id,
+        event_type="PAYMENT_RECEIVED",
+        payload={
+            "transaction_id": tx.id,
+            "method": req.method.value,
+            "fee_cents": tx.fee_cents,
+        },
+    )
     db.commit()
+
     db.refresh(tx)
     return tx
 

@@ -104,6 +104,55 @@ def test_weigh_endpoint_persists_matching_outbox_event(client, make_airline):
     assert events[0].attempts == 0
 
 
+def test_payment_endpoint_persists_matching_outbox_event(client, make_airline):
+    airline = make_airline("PY")
+
+    weigh_response = client.post(
+        "/weigh",
+        headers={"X-Kiosk-Key": "test-kiosk"},
+        json={
+            "airline_code": "PY",
+            "weight_kg": 24,
+            "flight_number": "PY123",
+        },
+    )
+
+    assert weigh_response.status_code == 201
+    tx = weigh_response.json()
+
+    payment_response = client.post(
+        f"/transactions/{tx['id']}/pay",
+        headers={"X-Kiosk-Key": "test-kiosk"},
+        json={
+            "method": "card",
+            "amount_cents": tx["fee_cents"],
+        },
+    )
+
+    assert payment_response.status_code == 200, payment_response.text
+    assert payment_response.json()["status"] == "READY_FOR_DROP"
+
+    with SessionLocal() as db:
+        events = (
+            db.query(OutboxEvent)
+            .filter_by(
+                airline_id=airline["id"],
+                transaction_id=tx["id"],
+                event_type="PAYMENT_RECEIVED",
+            )
+            .all()
+        )
+
+    assert len(events) == 1
+    assert json.loads(events[0].payload) == {
+        "transaction_id": tx["id"],
+        "method": "card",
+        "fee_cents": tx["fee_cents"],
+    }
+    assert events[0].published_at is None
+    assert events[0].attempts == 0
+
+
 def test_publish_pending_records_success(client, make_airline):
     airline = make_airline("PS")
     delivered = []

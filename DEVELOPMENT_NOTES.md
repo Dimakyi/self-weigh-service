@@ -94,7 +94,7 @@ These functions require appropriate validation and financial-integrity checks be
 The project has a hash-chained audit log, one chain per airline, covering weigh, payment, waiver, payout and statement events. It detects tampering but does not prevent it (see the README's "Honest limits"). Its integrity guarantees must be tested further before relying on it for formal auditing.
 
 ### Event Outbox
-A transactional outbox (`app/outbox.py`, `app/outbox_publisher.py`) lets the service queue events in the same database transaction as the action that caused them, and deliver them later with a lease-based publisher. Only `TRANSACTION_WEIGHED` is queued so far, and no worker or Kafka broker runs it yet. See the README's "Event outbox" section.
+A transactional outbox (`app/outbox.py`, `app/outbox_publisher.py`) lets the service queue events in the same database transaction as the action that caused them, and deliver them later with a lease-based publisher. `TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED` are queued so far. No worker or Kafka broker runs the publisher yet. See the README's "Event outbox" section.
 
 ## 6. Development Environment
 
@@ -238,7 +238,7 @@ Future work should be driven by inspection of the current code, test coverage, a
 
 Next steps, in the order they are likely to be tackled (Step 5 of the roadmap):
 
-- Queue outbox events for payments, waivers, payouts and statements (only `TRANSACTION_WEIGHED` is queued today).
+- Queue the remaining outbox events for waivers, payouts and statements (`TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED` are already queued).
 - Add a worker process that runs the publisher, then a Kafka producer and broker in Docker Compose.
 - Add retry limits, backoff and dead-letter handling for events that keep failing.
 - Build the operations dashboard.

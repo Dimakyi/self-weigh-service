@@ -34,7 +34,7 @@ This repo is the software side of that idea. The scale is simulated, so no hardw
 - [x] **Step 4:** monthly airline statements (PDF summary + CSV detail) and cash reconciliation
 - [ ] **Step 5:** events and an operations dashboard
   - [x] 5a: transactional outbox and a lease-based publisher (see [Event outbox](#event-outbox))
-  - [ ] 5b: queue events for payments, waivers, payouts and statements (only `TRANSACTION_WEIGHED` is queued today)
+  - [ ] 5b: queue remaining events for waivers, payouts and statements (`TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED` are queued today)
   - [ ] 5c: a worker process that runs the publisher, and a Kafka producer plus broker in Docker Compose
   - [ ] 5d: retry limits and dead-letter handling for events that keep failing
   - [ ] 5e: operations dashboard
@@ -173,7 +173,7 @@ Downstream systems (the planned Kafka feed and operations dashboard) need to hea
 - **Failures are recorded.** A failed delivery increments `attempts`, stores `last_error` and leaves the event pending for another try.
 - **At-least-once.** An event can be delivered more than once (for example, if a worker dies after delivering but before recording success), so **consumers must deduplicate by event ID**.
 
-**Current state:** only `TRANSACTION_WEIGHED` (from `POST /weigh`) is queued. Nothing runs `publish_pending` yet, and there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml`. Failed events are retried indefinitely, with no backoff, retry cap or dead-letter handling. Payment, waiver, payout and statement events are not queued yet.
+**Current state:** `TRANSACTION_WEIGHED` (from `POST /weigh`) and `PAYMENT_RECEIVED` (from `POST /transactions/{tx_id}/pay`) are queued in the same database transaction as their corresponding actions. Nothing runs `publish_pending` yet, and there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml`. Failed events are retried indefinitely, with no backoff, retry cap or dead-letter handling. Waiver, payout and statement events are not queued yet.
 
 ## Simulated passenger verification
 
