@@ -60,6 +60,12 @@ class Transaction(Base):
     fee_cents: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[Status] = mapped_column(Enum(Status))
     payment_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    payment_idempotency_key: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    payment_request_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     message: Mapped[str] = mapped_column(String(200), default="")
     waived_cents: Mapped[int] = mapped_column(Integer, default=0)
     waived_by_staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"), nullable=True)

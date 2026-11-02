@@ -75,6 +75,101 @@ def test_cannot_pay_twice(client, make_airline):
         assert len(outbox_events) == 1
 
 
+def test_payment_retry_with_same_idempotency_key_returns_original(
+    client, make_airline
+):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+
+    url = f"/transactions/{tx['id']}/pay"
+    body = {"method": "card", "amount_cents": tx["fee_cents"]}
+    headers = {**KIOSK, "Idempotency-Key": "payment-retry-001"}
+
+    first = client.post(url, headers=headers, json=body)
+    second = client.post(url, headers=headers, json=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert second.json()["status"] == "READY_FOR_DROP"
+
+    with SessionLocal() as db:
+        ledger_entries = db.scalars(
+            select(LedgerEntry).where(
+                LedgerEntry.transaction_id == tx["id"],
+                LedgerEntry.entry_type == LedgerType.PAYMENT,
+            )
+        ).all()
+
+        audit_events = db.scalars(
+            select(AuditEvent).where(
+                AuditEvent.transaction_id == tx["id"],
+                AuditEvent.event_type == "PAYMENT_RECEIVED",
+            )
+        ).all()
+
+        outbox_events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.transaction_id == tx["id"],
+                OutboxEvent.event_type == "PAYMENT_RECEIVED",
+            )
+        ).all()
+
+        assert len(ledger_entries) == 1
+        assert len(audit_events) == 1
+        assert len(outbox_events) == 1
+
+
+def test_payment_retry_with_different_method_returns_conflict(
+    client, make_airline
+):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+
+    url = f"/transactions/{tx['id']}/pay"
+    headers = {**KIOSK, "Idempotency-Key": "payment-retry-002"}
+
+    first = client.post(
+        url,
+        headers=headers,
+        json={"method": "card", "amount_cents": tx["fee_cents"]},
+    )
+
+    second = client.post(
+        url,
+        headers=headers,
+        json={"method": "cash", "amount_cents": tx["fee_cents"]},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_payment_retry_with_different_amount_returns_conflict(
+    client, make_airline
+):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+
+    url = f"/transactions/{tx['id']}/pay"
+    headers = {**KIOSK, "Idempotency-Key": "payment-retry-003"}
+
+    first = client.post(
+        url,
+        headers=headers,
+        json={"method": "card", "amount_cents": tx["fee_cents"]},
+    )
+
+    second = client.post(
+        url,
+        headers=headers,
+        json={"method": "card", "amount_cents": tx["fee_cents"] - 1},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
 def test_simultaneous_payments_only_process_once(client, make_airline):
     make_airline("SA")
     tx = weigh(client, "SA", 25.2).json()

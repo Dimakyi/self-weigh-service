@@ -2,6 +2,8 @@
 
 import json
 import math
+import hashlib
+from fastapi import Header
 from datetime import date, datetime, timezone
 from enum import Enum
 
@@ -333,11 +335,52 @@ def weigh(req: WeighRequest, db: Session = Depends(get_db), scale: Scale = Depen
 
 
 
-@app.post("/transactions/{tx_id}/pay", response_model=TransactionOut, dependencies=[Depends(require_kiosk)])
-def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
-    # Atomically claim the payment by changing the status only
-    # if this transaction is still awaiting payment and the
-    # exact amount is being paid.
+
+@app.post(
+    "/transactions/{tx_id}/pay",
+    response_model=TransactionOut,
+    dependencies=[Depends(require_kiosk)],
+)
+def pay(
+    tx_id: int,
+    req: PayRequest,
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+):
+    # Validate the optional idempotency key.
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+
+        if not idempotency_key or len(idempotency_key) > 100:
+            raise HTTPException(
+                422,
+                "Idempotency-Key must contain between 1 and 100 characters",
+            )
+
+    # Create a fingerprint of the payment request.
+    request_hash = None
+
+    if idempotency_key is not None:
+        request_data = {
+            "transaction_id": tx_id,
+            "method": req.method.value,
+            "amount_cents": req.amount_cents,
+        }
+
+        canonical_request = json.dumps(
+            request_data,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        request_hash = hashlib.sha256(
+            canonical_request.encode("utf-8")
+        ).hexdigest()
+
+    # Atomically claim the payment.
     result = db.execute(
         update(Transaction)
         .where(
@@ -347,6 +390,8 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
         )
         .values(
             payment_method=req.method.value,
+            payment_idempotency_key=idempotency_key,
+            payment_request_hash=request_hash,
             paid_at=datetime.now(timezone.utc),
             status=Status.READY_FOR_DROP,
             message="Payment received. Proceed to bag drop.",
@@ -354,18 +399,36 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
         .execution_options(synchronize_session=False)
     )
 
-    # If the conditional update did not change exactly one row,
-    # determine why the payment was rejected.
+    # Handle unsuccessful claims and possible retries.
     if result.rowcount != 1:
         tx = db.get(Transaction, tx_id)
 
         if tx is None:
             raise HTTPException(404, "Transaction not found")
 
+        # Return the original result for an exact retry.
+        if tx.status == Status.READY_FOR_DROP:
+            if (
+                idempotency_key is not None
+                and tx.payment_idempotency_key == idempotency_key
+            ):
+                if tx.payment_request_hash == request_hash:
+                    return tx
+
+                raise HTTPException(
+                    409,
+                    "Idempotency key was already used with different payment details",
+                )
+
+            raise HTTPException(
+                409,
+                f"Transaction is {tx.status.value}, no payment due",
+            )
+
         if tx.status != Status.AWAITING_PAYMENT:
             raise HTTPException(
                 409,
-                f"Transaction is {tx.status.value}, no payment due"
+                f"Transaction is {tx.status.value}, no payment due",
             )
 
         if req.amount_cents > tx.fee_cents:
@@ -389,7 +452,10 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
         "PAYMENT_RECEIVED",
         "kiosk",
         tx.id,
-        {"method": req.method.value, "fee_cents": tx.fee_cents},
+        {
+            "method": req.method.value,
+            "fee_cents": tx.fee_cents,
+        },
     )
 
     enqueue_event(
