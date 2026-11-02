@@ -32,7 +32,8 @@ def test_waiver_clears_fee_and_is_visible_to_airline(client, make_airline):
     assert body["status"] == "READY_FOR_DROP" and body["waived_cents"] == 45000
     seen = client.get(f"/airlines/me/transactions/{tx['id']}", headers=AK(sa)).json()
     assert seen["waiver_reason"] == "Flight delayed, gate agent approved"
-
+    second = waive(client, tx, staff)
+    assert second.status_code == 409
 
 def test_waiver_needs_staff_key(client, make_airline):
     make_airline("SA")

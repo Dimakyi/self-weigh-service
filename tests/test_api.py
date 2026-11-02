@@ -361,6 +361,21 @@ def test_invalid_submitted_weight_is_rejected(
 
     assert response.status_code == 422
 
+
+def test_nan_weight_returns_422_with_valid_json_error(client, make_airline):
+    make_airline("SA")
+
+    response = client.post(
+        "/weigh",
+        headers=KIOSK,
+        content='{"airline_code":"SA","weight_kg":NaN}',
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
+    assert "input" not in response.json()["detail"][0]
+
+
 @pytest.mark.parametrize(
     "weight",
     [float("nan"), float("inf"), float("-inf")],
@@ -371,13 +386,13 @@ def test_non_finite_submitted_weight_is_rejected(weight):
             airline_code="SA",
             weight_kg=weight,
         )
+
 class FixedScale:
     def __init__(self, reading):
         self.reading = reading
 
     def read_kg(self):
         return self.reading
-
 
 @pytest.mark.parametrize(
     "reading",

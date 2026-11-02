@@ -43,14 +43,37 @@ def balance(db: Session, airline: Airline) -> dict:
 
 
 def record_payout(db: Session, airline: Airline, amount_cents: int, reference: str | None) -> LedgerEntry:
-    due = balance(db, airline)["balance_due_cents"]
+    # Lock the airline row so concurrent payouts cannot spend the same balance.
+    locked_airline = db.scalar(
+        select(Airline)
+        .where(Airline.id == airline.id)
+        .with_for_update()
+    )
+
+    if locked_airline is None:
+        raise ValueError("Airline not found")
+
+    due = balance(db, locked_airline)["balance_due_cents"]
+
     if amount_cents > due:
         raise ValueError(f"Payout exceeds balance due ({due} cents)")
-    entry = LedgerEntry(airline_id=airline.id, entry_type=LedgerType.PAYOUT,
-                        amount_cents=-amount_cents, reference=reference)
+
+    entry = LedgerEntry(
+        airline_id=locked_airline.id,
+        entry_type=LedgerType.PAYOUT,
+        amount_cents=-amount_cents,
+        reference=reference,
+    )
     db.add(entry)
-    audit.append(db, airline.id, "PAYOUT_RECORDED", "admin",
-                 payload={"amount_cents": amount_cents, "reference": reference})
+
+    audit.append(
+        db,
+        locked_airline.id,
+        "PAYOUT_RECORDED",
+        "admin",
+        payload={"amount_cents": amount_cents, "reference": reference},
+    )
+
     db.commit()
     db.refresh(entry)
     return entry

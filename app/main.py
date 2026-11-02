@@ -8,6 +8,8 @@ from datetime import date, datetime, timezone
 from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -36,6 +38,25 @@ from app.outbox import enqueue_event
 
 Base.metadata.create_all(engine)
 app = FastAPI(title="Self Weigh Service", description="Weigh. Pay. Drop.")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    safe_errors = [
+        {
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid input"),
+            "type": error.get("type", "validation_error"),
+        }
+        for error in exc.errors()
+    ]
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": safe_errors},
+    )
+
+
 _scale: Scale = SimulatedScale()
 
 
@@ -476,25 +497,77 @@ def pay(
 
 
 @app.post("/transactions/{tx_id}/waive", response_model=TransactionOut)
-def waive(tx_id: int, body: WaiveRequest, staff: Staff = Depends(current_staff),
-          db: Session = Depends(get_db)):
-    """Authorised staff waive a fee. Needs a personal key and a reason, respects a per-person limit,
-    and is permanently recorded and visible to the airline."""
+def waive(
+    tx_id: int,
+    body: WaiveRequest,
+    staff: Staff = Depends(current_staff),
+    db: Session = Depends(get_db),
+):
+    """Authorised staff waive a fee. Needs a personal key and a reason,
+    respects a per-person limit, and is permanently recorded and visible
+    to the airline.
+    """
     tx = db.get(Transaction, tx_id)
+
     if tx is None:
         raise HTTPException(404, "Transaction not found")
+
     if tx.status != Status.AWAITING_PAYMENT:
-        raise HTTPException(409, f"Transaction is {tx.status.value}, nothing to waive")
+        raise HTTPException(
+            409,
+            f"Transaction is {tx.status.value}, nothing to waive",
+        )
+
     if tx.fee_cents > staff.waiver_limit_cents:
-        raise HTTPException(403, "Fee is above your waiver limit; ask a supervisor")
-    tx.waived_cents = tx.fee_cents
-    tx.waived_by_staff_id = staff.id
-    tx.waived_at = datetime.now(timezone.utc)
-    tx.waiver_reason = body.reason
-    tx.status = Status.READY_FOR_DROP
-    tx.message = "Fee waived by authorised staff. Proceed to bag drop."
-    audit.append(db, tx.airline_id, "FEE_WAIVED", f"staff:{staff.staff_code}", tx.id,
-                 {"waived_cents": tx.waived_cents, "reason": body.reason})
+        raise HTTPException(
+            403,
+            "Fee is above your waiver limit; ask a supervisor",
+        )
+
+    waived_at = datetime.now(timezone.utc)
+
+    result = db.execute(
+        update(Transaction)
+        .where(
+            Transaction.id == tx_id,
+            Transaction.status == Status.AWAITING_PAYMENT,
+        )
+        .values(
+            waived_cents=Transaction.fee_cents,
+            waived_by_staff_id=staff.id,
+            waived_at=waived_at,
+            waiver_reason=body.reason,
+            status=Status.READY_FOR_DROP,
+            message="Fee waived by authorised staff. Proceed to bag drop.",
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+    if result.rowcount != 1:
+        db.rollback()
+
+        current_tx = db.get(Transaction, tx_id)
+
+        if current_tx is None:
+            raise HTTPException(404, "Transaction not found")
+
+        raise HTTPException(
+            409,
+            f"Transaction is {current_tx.status.value}, nothing to waive",
+        )
+
+    audit.append(
+        db,
+        tx.airline_id,
+        "FEE_WAIVED",
+        f"staff:{staff.staff_code}",
+        tx.id,
+        {
+            "waived_cents": tx.fee_cents,
+            "reason": body.reason,
+        },
+    )
+
     db.commit()
     db.refresh(tx)
     return tx
