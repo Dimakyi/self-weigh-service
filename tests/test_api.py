@@ -138,3 +138,34 @@ def test_inactive_airline_key_is_rejected(client, make_airline):
         headers={"X-Api-Key": airline["api_key"]},
     )
     assert response.status_code == 401
+
+
+def test_airline_allowance_cannot_exceed_max_bag_weight(client):
+    response = client.post(
+        "/airlines",
+        headers=ADMIN,
+        json={
+            "iata_code": "XX",
+            "name": "Test Air",
+            "allowance_kg": 33,
+            "max_bag_kg": 32,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_overpayment_is_rejected(client, make_airline):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+
+    response = client.post(
+        f"/transactions/{tx['id']}/pay",
+        headers=KIOSK,
+        json={
+            "method": "card",
+            "amount_cents": tx["fee_cents"] + 1,
+        },
+    )
+
+    assert response.status_code == 422

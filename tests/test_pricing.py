@@ -1,5 +1,34 @@
 from app.pricing import Policy, quote
 
+import math
+
+
+def test_nan_weight_is_rejected():
+    assert quote(math.nan, P).rejected
+
+
+def test_infinite_weight_is_rejected():
+    assert quote(math.inf, P).rejected
+    assert quote(-math.inf, P).rejected
+
+
+def test_fractional_allowance_calculation():
+    policy = Policy(23.5, 32, 15000)
+
+    assert quote(24.1, policy).excess_kg == 1
+    assert quote(24.5, policy).excess_kg == 1
+    assert quote(24.6, policy).excess_kg == 2
+
+
+def test_fractional_allowance_fee():
+    policy = Policy(23.5, 32, 15000)
+
+    result = quote(24.6, policy)
+
+    assert result.excess_kg == 2
+    assert result.fee_cents == 30000
+
+
 P = Policy(allowance_kg=23, max_bag_kg=32, excess_rate_cents_per_kg=15000)
 
 

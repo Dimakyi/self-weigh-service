@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -51,15 +51,33 @@ class PaymentMethod(str, Enum):
 
 
 # ---------- schemas ----------
+
 class AirlineCreate(BaseModel):
     iata_code: str = Field(min_length=2, max_length=3, pattern="^[A-Za-z0-9]+$")
     name: str = Field(min_length=1, max_length=100)
-    allowance_kg: float = Field(config.DEFAULT_ALLOWANCE_KG, gt=0)
-    max_bag_kg: float = Field(config.DEFAULT_MAX_BAG_KG, gt=0)
-    excess_rate_cents_per_kg: int = Field(config.DEFAULT_EXCESS_RATE_CENTS_PER_KG, ge=0)
+    allowance_kg: float = Field(
+        config.DEFAULT_ALLOWANCE_KG, gt=0, allow_inf_nan=False
+    )
+    max_bag_kg: float = Field(
+        config.DEFAULT_MAX_BAG_KG, gt=0, allow_inf_nan=False
+    )
+    excess_rate_cents_per_kg: int = Field(
+        config.DEFAULT_EXCESS_RATE_CENTS_PER_KG, ge=0
+    )
     currency: str = Field("ZAR", min_length=3, max_length=3)
     collector: Collector = Collector.operator
-    service_fee_bps: int = Field(500, ge=0, le=10_000, description="Operator cut in basis points (500 = 5%)")
+    service_fee_bps: int = Field(
+        500, ge=0, le=10_000,
+        description="Operator cut in basis points (500 = 5%)"
+    )
+
+    @model_validator(mode="after")
+    def allowance_must_not_exceed_max_bag(self):
+        if self.allowance_kg > self.max_bag_kg:
+            raise ValueError(
+                "Allowance cannot exceed the maximum bag weight"
+            )
+        return self
 
 
 class AirlineOut(BaseModel):
@@ -311,6 +329,8 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
         raise HTTPException(404, "Transaction not found")
     if tx.status != Status.AWAITING_PAYMENT:
         raise HTTPException(409, f"Transaction is {tx.status.value}, no payment due")
+    if req.amount_cents > tx.fee_cents:
+        raise HTTPException(422, "Amount exceeds the fee due")
     if req.amount_cents < tx.fee_cents:
         raise HTTPException(402, "Amount is less than the fee due")
     tx.payment_method = req.method.value
