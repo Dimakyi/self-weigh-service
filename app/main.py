@@ -1,6 +1,7 @@
 """Self Weigh Service API: weigh -> (pay) -> proceed to bag drop, separated per airline."""
 
 import json
+import math
 from datetime import date, datetime, timezone
 from enum import Enum
 
@@ -101,8 +102,12 @@ class AirlineCreated(AirlineOut):
 class WeighRequest(BaseModel):
     airline_code: str
     flight_number: str | None = Field(None, max_length=10)
-    weight_kg: float | None = Field(None, description="Omit to read from the (simulated) scale")
-
+    weight_kg: float | None = Field(
+        None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Omit to read from the scale"
+    )
 
 class PayRequest(BaseModel):
     method: PaymentMethod
@@ -289,6 +294,11 @@ def _airline_by_code(db: Session, code: str) -> Airline:
 def weigh(req: WeighRequest, db: Session = Depends(get_db), scale: Scale = Depends(get_scale)):
     airline = _airline_by_code(db, req.airline_code)
     weight = req.weight_kg if req.weight_kg is not None else scale.read_kg()
+    if not math.isfinite(weight) or weight <= 0:
+        raise HTTPException(
+            503,
+            "Scale returned an invalid weight reading. Please retry or use the staffed counter."
+    )
     q = pricing.quote(weight, pricing.Policy(airline.allowance_kg, airline.max_bag_kg,
                                              airline.excess_rate_cents_per_kg))
     if q.rejected:

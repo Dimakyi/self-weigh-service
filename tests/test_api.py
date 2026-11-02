@@ -1,5 +1,10 @@
-from conftest import ADMIN, KIOSK
+import pytest
+from pydantic import ValidationError
 
+from conftest import ADMIN, KIOSK
+from app.db import SessionLocal
+from app.main import app as api_app, get_scale, WeighRequest
+from app.models import Transaction
 
 def weigh(client, code, kg, flight=None):
     return client.post("/weigh", headers=KIOSK,
@@ -169,3 +174,57 @@ def test_overpayment_is_rejected(client, make_airline):
     )
 
     assert response.status_code == 422
+
+@pytest.mark.parametrize("weight", [0, -1])
+def test_invalid_submitted_weight_is_rejected(
+    client, make_airline, weight
+):
+    make_airline("SA")
+
+    response = weigh(client, "SA", weight)
+
+    assert response.status_code == 422
+
+@pytest.mark.parametrize(
+    "weight",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_non_finite_submitted_weight_is_rejected(weight):
+    with pytest.raises(ValidationError):
+        WeighRequest(
+            airline_code="SA",
+            weight_kg=weight,
+        )
+class FixedScale:
+    def __init__(self, reading):
+        self.reading = reading
+
+    def read_kg(self):
+        return self.reading
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [float("nan"), float("inf"), float("-inf"), 0, -1],
+)
+def test_invalid_scale_reading_returns_503_without_transaction(
+    client, make_airline, monkeypatch, reading
+):
+    make_airline("SA")
+
+    monkeypatch.setitem(
+        api_app.dependency_overrides,
+        get_scale,
+        lambda: FixedScale(reading),
+    )
+
+    response = client.post(
+        "/weigh",
+        headers=KIOSK,
+        json={"airline_code": "SA"},
+    )
+
+    assert response.status_code == 503
+
+    with SessionLocal() as db:
+        assert db.query(Transaction).count() == 0
