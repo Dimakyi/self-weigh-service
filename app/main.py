@@ -7,7 +7,7 @@ from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app import audit, config, ledger, pricing, statement_pdf, statements
@@ -332,25 +332,66 @@ def weigh(req: WeighRequest, db: Session = Depends(get_db), scale: Scale = Depen
     return tx
 
 
+
 @app.post("/transactions/{tx_id}/pay", response_model=TransactionOut, dependencies=[Depends(require_kiosk)])
 def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
-    tx = db.get(Transaction, tx_id)
-    if tx is None:
-        raise HTTPException(404, "Transaction not found")
-    if tx.status != Status.AWAITING_PAYMENT:
-        raise HTTPException(409, f"Transaction is {tx.status.value}, no payment due")
-    if req.amount_cents > tx.fee_cents:
-        raise HTTPException(422, "Amount exceeds the fee due")
-    if req.amount_cents < tx.fee_cents:
-        raise HTTPException(402, "Amount is less than the fee due")
-    tx.payment_method = req.method.value
-    tx.paid_at = datetime.now(timezone.utc)
-    tx.status = Status.READY_FOR_DROP
-    tx.message = "Payment received. Proceed to bag drop."
-    ledger.record_payment(db, db.get(Airline, tx.airline_id), tx)  # same commit: payment + ledger are atomic
+    # Atomically claim the payment by changing the status only
+    # if this transaction is still awaiting payment and the
+    # exact amount is being paid.
+    result = db.execute(
+        update(Transaction)
+        .where(
+            Transaction.id == tx_id,
+            Transaction.status == Status.AWAITING_PAYMENT,
+            Transaction.fee_cents == req.amount_cents,
+        )
+        .values(
+            payment_method=req.method.value,
+            paid_at=datetime.now(timezone.utc),
+            status=Status.READY_FOR_DROP,
+            message="Payment received. Proceed to bag drop.",
+        )
+        .execution_options(synchronize_session=False)
+    )
 
-    audit.append(db, tx.airline_id, "PAYMENT_RECEIVED", "kiosk", tx.id,
-                 {"method": req.method.value, "fee_cents": tx.fee_cents})
+    # If the conditional update did not change exactly one row,
+    # determine why the payment was rejected.
+    if result.rowcount != 1:
+        tx = db.get(Transaction, tx_id)
+
+        if tx is None:
+            raise HTTPException(404, "Transaction not found")
+
+        if tx.status != Status.AWAITING_PAYMENT:
+            raise HTTPException(
+                409,
+                f"Transaction is {tx.status.value}, no payment due"
+            )
+
+        if req.amount_cents > tx.fee_cents:
+            raise HTTPException(422, "Amount exceeds the fee due")
+
+        if req.amount_cents < tx.fee_cents:
+            raise HTTPException(402, "Amount is less than the fee due")
+
+        raise HTTPException(409, "Payment could not be processed")
+
+    # Load the successfully updated transaction.
+    tx = db.get(Transaction, tx_id)
+    airline = db.get(Airline, tx.airline_id)
+
+    # Keep payment, ledger, audit and outbox in one transaction.
+    ledger.record_payment(db, airline, tx)
+
+    audit.append(
+        db,
+        tx.airline_id,
+        "PAYMENT_RECEIVED",
+        "kiosk",
+        tx.id,
+        {"method": req.method.value, "fee_cents": tx.fee_cents},
+    )
+
     enqueue_event(
         db,
         airline_id=tx.airline_id,
@@ -362,8 +403,8 @@ def pay(tx_id: int, req: PayRequest, db: Session = Depends(get_db)):
             "fee_cents": tx.fee_cents,
         },
     )
-    db.commit()
 
+    db.commit()
     db.refresh(tx)
     return tx
 

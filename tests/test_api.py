@@ -5,6 +5,14 @@ from conftest import ADMIN, KIOSK
 from app.db import SessionLocal
 from app.main import app as api_app, get_scale, WeighRequest
 from app.models import Transaction
+from sqlalchemy import select
+from app.models import AuditEvent, LedgerEntry, LedgerType, OutboxEvent
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+from fastapi.testclient import TestClient
+from app.db import get_db
+
 
 def weigh(client, code, kg, flight=None):
     return client.post("/weigh", headers=KIOSK,
@@ -29,10 +37,83 @@ def test_overweight_requires_payment_then_ready(client, make_airline):
 
 def test_cannot_pay_twice(client, make_airline):
     make_airline("SA")
-    tx = weigh(client, "SA", 24).json()
+    tx = weigh(client, "SA", 25.2).json()
     body = {"method": "cash", "amount_cents": tx["fee_cents"]}
-    client.post(f"/transactions/{tx['id']}/pay", headers=KIOSK, json=body)
-    assert client.post(f"/transactions/{tx['id']}/pay", headers=KIOSK, json=body).status_code == 409
+
+    url = f"/transactions/{tx['id']}/pay"
+
+    first = client.post(url, headers=KIOSK, json=body)
+    second = client.post(url, headers=KIOSK, json=body)
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+    with SessionLocal() as db:
+        ledger_entries = db.scalars(
+            select(LedgerEntry).where(
+                LedgerEntry.transaction_id == tx["id"],
+                LedgerEntry.entry_type == LedgerType.PAYMENT,
+            )
+        ).all()
+
+        audit_events = db.scalars(
+            select(AuditEvent).where(
+                AuditEvent.transaction_id == tx["id"],
+                AuditEvent.event_type == "PAYMENT_RECEIVED",
+            )
+        ).all()
+
+        outbox_events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.transaction_id == tx["id"],
+                OutboxEvent.event_type == "PAYMENT_RECEIVED",
+            )
+        ).all()
+
+        assert len(ledger_entries) == 1
+        assert len(audit_events) == 1
+        assert len(outbox_events) == 1
+
+
+def test_simultaneous_payments_only_process_once(client, make_airline):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+
+    body = {"method": "cash", "amount_cents": tx["fee_cents"]}
+    url = f"/transactions/{tx['id']}/pay"
+
+    # Make both requests wait until they are ready to proceed.
+    barrier = Barrier(2)
+
+    def synchronized_get_db():
+        db = SessionLocal()
+        try:
+            barrier.wait(timeout=10)
+            yield db
+        finally:
+            db.close()
+
+    api_app.dependency_overrides[get_db] = synchronized_get_db
+
+    def send_payment():
+        with TestClient(api_app) as concurrent_client:
+            response = concurrent_client.post(
+                url,
+                headers=KIOSK,
+                json=body,
+            )
+            return response.status_code
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(
+                lambda _: send_payment(),
+                range(2),
+            ))
+    finally:
+        api_app.dependency_overrides.pop(get_db, None)
+
+    assert sorted(statuses) == [200, 409]
 
 
 def test_overlimit_bag_rejected(client, make_airline):
