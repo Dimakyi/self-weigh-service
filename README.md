@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 85 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 106 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
@@ -87,6 +87,20 @@ Ledger rules:
 | `GET /airlines/me/balance`, `GET /airlines/me/ledger` | airline | its own position only |
 
 Not yet handled: mid-period changes of collector, refunds and corrections.
+
+## Payment reliability and idempotency
+
+Payment processing is protected against duplicate requests and inconsistent records.
+
+- **Atomic payment claim:** a payment can only move a transaction from `AWAITING_PAYMENT` to `READY_FOR_DROP` once.
+- **Duplicate protection:** a second payment attempt without a matching idempotency key is rejected with HTTP 409.
+- **Safe retries:** the kiosk can send an `Idempotency-Key` header (1–100 characters). Repeating the same request with the same key and payment details returns the original transaction instead of recording another payment.
+- **Conflict detection:** reusing a key with different payment details, such as a different payment method or amount, returns HTTP 409.
+- **Consistent records:** the payment, settlement ledger entry, audit event and outbox event are committed together in one database transaction.
+
+The request fingerprint is calculated using SHA-256. This helps the service identify whether a retry matches the original payment request.
+
+**Current limitation:** this is application-level payment retry protection. Card, mobile and cash payments are represented in the service; no external payment gateway or banking processor is integrated. A production deployment would need a payment-provider integration and its own reconciliation and security controls.
 
 ## Fee waivers and the audit log
 
@@ -212,14 +226,45 @@ This endpoint is a demonstration of the verification workflow, not a production 
 
 ### Option 1: Interactive API documentation (recommended)
 
-Start the application with Docker Compose:
+The easiest way to run the application locally is with Docker Compose.
+
+**1. Start the PostgreSQL database:**
 
 ```powershell
-docker compose up --build
+docker compose up -d db
 ```
-This Compose configuration uses development defaults and is intended for local testing. Do not expose it as a production deployment. Stop the services with `Ctrl+C`, then run `docker compose down` when you have finished.
 
-Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. The interactive documentation lets you explore endpoints and send requests without needing `curl`.
+**2. Build the API image and run the database migration:**
+
+```powershell
+docker compose run --build --rm api python -m app.migrate
+```
+
+**3. Start the API service:**
+
+```powershell
+docker compose up --build -d api
+```
+
+**4. Open the interactive API documentation:**
+
+Visit [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. You can explore the endpoints and send requests without needing `curl`.
+
+**5. Check the running services:**
+
+```powershell
+docker compose ps
+```
+
+**6. Stop the services when finished:**
+
+```powershell
+docker compose down
+```
+
+The PostgreSQL database uses a persistent Docker volume, so its data is retained when the containers are stopped and removed. To permanently delete the local database volume and its data, use `docker compose down -v`.
+
+This Compose configuration uses development defaults and is intended for local testing only. Do not expose it as a production deployment.
 ### Option 2: Test with PowerShell
 
 Create an airline using PowerShell's `Invoke-RestMethod`:
@@ -331,6 +376,6 @@ If PowerShell blocks virtual-environment activation, see the [official Python do
 
 When `APP_ENV=production`, the application refuses to start if either `ADMIN_API_KEY` or `KIOSK_API_KEY` still has its built-in development value. Supply non-default values through the deployment environment.
 
-**Important:** the Docker Compose file currently supplies development API keys and hard-coded PostgreSQL example credentials by default. These are for local demonstration only, not production deployment. A production deployment must use securely managed secrets, appropriate database credentials and network access controls, and a reviewed deployment configuration. Changing the API keys alone does not make the service production-ready.
+**Important:** the Docker Compose file currently supplies development API keys and hard-coded PostgreSQL example credentials by default. These are for local demonstration only, not production deployment. A production deployment must use securely managed secrets, appropriate database and network access controls, and a reviewed deployment configuration. Changing the API keys alone does not make the service production-ready.
 
-The application creates its database schema automatically for now. Database migrations (Alembic) are planned for later development.
+The application creates missing database tables automatically. The project also includes a lightweight schema migration script at `app/migrate.py`. Run `python -m app.migrate` with the correct `DATABASE_URL` configured when upgrading an existing database. The script adds the payment idempotency columns if they are missing. Alembic-based versioned migrations have not yet been implemented.

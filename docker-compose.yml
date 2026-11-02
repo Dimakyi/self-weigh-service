@@ -5,10 +5,13 @@ services:
       POSTGRES_USER: selfweigh
       POSTGRES_PASSWORD: selfweigh
       POSTGRES_DB: selfweigh
+    volumes:
+      - selfweigh_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U selfweigh"]
       interval: 5s
       retries: 10
+
   api:
     build: .
     environment:
@@ -21,3 +24,6 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+volumes:
+  selfweigh_data:
