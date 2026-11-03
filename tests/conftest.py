@@ -1,8 +1,10 @@
 import os
 import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
+if not os.getenv("DATABASE_URL"):
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        os.environ["DATABASE_URL"] = f"sqlite:///{tmp.name}"
+
 os.environ["ADMIN_API_KEY"] = "test-admin"
 os.environ["KIOSK_API_KEY"] = "test-kiosk"
 
@@ -30,7 +32,12 @@ def client():
 @pytest.fixture
 def make_airline(client):
     def _make(code="SA", **kw):
-        r = client.post("/airlines", headers=ADMIN, json={"iata_code": code, "name": f"{code} Air", **kw})
+        r = client.post(
+            "/airlines",
+            headers=ADMIN,
+            json={"iata_code": code, "name": f"{code} Air", **kw},
+        )
         assert r.status_code == 201, r.text
         return r.json()
+
     return _make
