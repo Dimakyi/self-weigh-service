@@ -1,4 +1,4 @@
-﻿from conftest import KIOSK
+from conftest import KIOSK
 
 
 def test_passenger_verification_requires_kiosk_key(client):
@@ -11,6 +11,21 @@ def test_passenger_verification_requires_kiosk_key(client):
             "boarding_pass_flight": "SA123",
         },
     )
+    assert response.status_code == 401
+
+
+def test_passenger_verification_rejects_wrong_kiosk_key(client):
+    response = client.post(
+        "/passenger/verify",
+        headers={"X-Kiosk-Key": "wrong"},
+        json={
+            "passenger_name": "Test Passenger",
+            "boarding_pass_name": "Test Passenger",
+            "flight_number": "SA123",
+            "boarding_pass_flight": "SA123",
+        },
+    )
+
     assert response.status_code == 401
 
 

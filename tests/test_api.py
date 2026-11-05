@@ -35,6 +35,23 @@ def test_overweight_requires_payment_then_ready(client, make_airline):
     assert ok.json()["status"] == "READY_FOR_DROP"
 
 
+def test_payment_requires_kiosk_key(client, make_airline):
+    make_airline("SA")
+    tx = weigh(client, "SA", 25.2).json()
+    url = f"/transactions/{tx['id']}/pay"
+    body = {"method": "card", "amount_cents": tx["fee_cents"]}
+
+    missing_key = client.post(url, json=body)
+    wrong_key = client.post(
+        url,
+        headers={"X-Kiosk-Key": "wrong"},
+        json=body,
+    )
+
+    assert missing_key.status_code == 401
+    assert wrong_key.status_code == 401
+
+
 def test_cannot_pay_twice(client, make_airline):
     make_airline("SA")
     tx = weigh(client, "SA", 25.2).json()
