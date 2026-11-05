@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from conftest import ADMIN, KIOSK
 from app.db import SessionLocal
 from app.main import app as api_app, get_scale, WeighRequest
-from app.models import Transaction
+from app.models import Transaction, Status
 from sqlalchemy import select
 from app.models import AuditEvent, LedgerEntry, LedgerType, OutboxEvent
 from concurrent.futures import ThreadPoolExecutor
@@ -209,6 +209,120 @@ def test_simultaneous_payments_only_process_once(client, make_airline):
         api_app.dependency_overrides.pop(get_db, None)
 
     assert sorted(statuses) == [200, 409]
+
+def test_simultaneous_payment_and_waiver_only_one_wins(client, make_airline):
+    from app.models import Staff
+
+    sa = make_airline("SA")
+    staff_response = client.post(
+        "/staff",
+        headers=ADMIN,
+        json={
+            "staff_code": "RACE01",
+            "name": "Race Test Staff",
+            "waiver_limit_cents": 50_000,
+        },
+    )
+    assert staff_response.status_code == 201, staff_response.text
+    staff = staff_response.json()
+
+    tx = weigh(client, "SA", 25.2).json()
+    tx_id = tx["id"]
+
+    barrier = Barrier(2)
+
+    def synchronized_get_db():
+        db = SessionLocal()
+        try:
+            barrier.wait(timeout=10)
+            yield db
+        finally:
+            db.close()
+
+    api_app.dependency_overrides[get_db] = synchronized_get_db
+
+    def send_payment():
+        with TestClient(api_app) as concurrent_client:
+            response = concurrent_client.post(
+                f"/transactions/{tx_id}/pay",
+                headers=KIOSK,
+                json={
+                    "method": "card",
+                    "amount_cents": tx["fee_cents"],
+                },
+            )
+            return response.status_code
+
+    def send_waiver():
+        with TestClient(api_app) as concurrent_client:
+            response = concurrent_client.post(
+                f"/transactions/{tx_id}/waive",
+                headers={"X-Staff-Key": staff["api_key"]},
+                json={"reason": "Approved during concurrency test"},
+            )
+            return response.status_code
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            payment_future = executor.submit(send_payment)
+            waiver_future = executor.submit(send_waiver)
+
+            payment_status = payment_future.result(timeout=20)
+            waiver_status = waiver_future.result(timeout=20)
+    finally:
+        api_app.dependency_overrides.pop(get_db, None)
+
+    assert sorted([payment_status, waiver_status]) == [200, 409]
+
+    with SessionLocal() as db:
+        final_tx = db.get(Transaction, tx_id)
+        assert final_tx is not None
+        assert final_tx.status == Status.READY_FOR_DROP
+
+        ledger_entries = db.scalars(
+            select(LedgerEntry).where(
+                LedgerEntry.transaction_id == tx_id
+            )
+        ).all()
+
+        audit_events = db.scalars(
+            select(AuditEvent).where(
+                AuditEvent.airline_id == sa["id"],
+                AuditEvent.transaction_id == tx_id,
+            )
+        ).all()
+
+        event_types = [event.event_type for event in audit_events]
+
+        if payment_status == 200:
+            assert final_tx.paid_at is not None
+            assert final_tx.waived_at is None
+            assert final_tx.waived_cents == 0
+
+            assert sum(
+                entry.entry_type == LedgerType.PAYMENT
+                for entry in ledger_entries
+            ) == 1
+
+            assert "PAYMENT_RECEIVED" in event_types
+            assert "FEE_WAIVED" not in event_types
+
+        else:
+            assert final_tx.waived_at is not None
+            assert final_tx.paid_at is None
+            assert final_tx.waived_cents == tx["fee_cents"]
+
+            assert ledger_entries == []
+
+            assert "FEE_WAIVED" in event_types
+            assert "PAYMENT_RECEIVED" not in event_types
+
+    verification = client.get(
+        "/airlines/me/audit/verify",
+        headers={"X-Api-Key": sa["api_key"]},
+    )
+    assert verification.status_code == 200
+    assert verification.json()["valid"] is True
 
 
 def test_overlimit_bag_rejected(client, make_airline):
