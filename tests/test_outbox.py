@@ -486,3 +486,62 @@ def test_publisher_does_not_interfere_with_active_caller_transaction(
         assert probe_values == [42]
 
         caller_db.rollback()
+
+
+def test_expired_lease_can_cause_duplicate_delivery(client, make_airline):
+    airline = make_airline("DD")
+    deliveries = []
+
+    with SessionLocal() as db:
+        event = enqueue_event(
+            db,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload={"amount": 600},
+        )
+        event_id = event.id
+        db.commit()
+
+    def first_delivery(event_id, event_type, payload):
+        # Simulate successful external delivery by worker A.
+        deliveries.append((event_id, event_type, payload))
+
+        # Simulate the lease expiring before worker A records success.
+        with SessionLocal() as db:
+            saved = db.get(OutboxEvent, event_id)
+            assert saved is not None
+            saved.claimed_until = (
+                datetime.now(timezone.utc) - timedelta(seconds=1)
+            )
+            db.commit()
+
+    first_count = publish_pending(
+        first_delivery,
+        worker_id="worker-a",
+    )
+
+    assert first_count == 0
+    assert len(deliveries) == 1
+
+    # Worker B delivers the reclaimed event.
+    second_count = publish_pending(
+        lambda event_id, event_type, payload: deliveries.append(
+            (event_id, event_type, payload)
+        ),
+        worker_id="worker-b",
+    )
+
+    assert second_count == 1
+    assert len(deliveries) == 2
+
+    # Both external deliveries refer to the same event.
+    assert deliveries[0][0] == deliveries[1][0] == event_id
+    assert deliveries[0][1] == deliveries[1][1] == "PAYMENT_RECEIVED"
+    assert deliveries[0][2] == deliveries[1][2] == {"amount": 600}
+
+    with SessionLocal() as db:
+        saved = db.get(OutboxEvent, event_id)
+        assert saved is not None
+        assert saved.published_at is not None
+        assert saved.claimed_by is None
+        assert saved.claim_token is None
