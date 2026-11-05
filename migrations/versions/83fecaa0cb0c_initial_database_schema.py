@@ -169,4 +169,9 @@ def downgrade() -> None:
     op.drop_table('cash_reconciliations')
     op.drop_index(op.f('ix_airlines_iata_code'), table_name='airlines')
     op.drop_table('airlines')
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        sa.Enum(name='ledgertype').drop(bind, checkfirst=True)
+        sa.Enum(name='status').drop(bind, checkfirst=True)
+        sa.Enum(name='collector').drop(bind, checkfirst=True)
     # ### end Alembic commands ###

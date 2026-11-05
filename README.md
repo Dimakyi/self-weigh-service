@@ -234,29 +234,25 @@ The easiest way to run the application locally is with Docker Compose.
 docker compose up -d db
 ```
 
-**2. Build the API image and run the database migration:**
-
-```powershell
-docker compose run --build --rm api python -m app.migrate
-```
-
-**3. Start the API service:**
+**2. Build and start the API service:**
 
 ```powershell
 docker compose up --build -d api
 ```
 
-**4. Open the interactive API documentation:**
+The API container automatically runs `alembic upgrade head` before starting the application.
+
+**3. Open the interactive API documentation:**
 
 Visit [http://localhost:8000/docs](http://localhost:8000/docs) in your browser. You can explore the endpoints and send requests without needing `curl`.
 
-**5. Check the running services:**
+**4. Check the running services:**
 
 ```powershell
 docker compose ps
 ```
 
-**6. Stop the services when finished:**
+**5. Stop the services when finished:**
 
 ```powershell
 docker compose down
@@ -346,6 +342,9 @@ py -3.12 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
+# Apply database migrations
+python -m alembic upgrade head
+
 # Start the API
 python -m uvicorn app.main:app --reload
 ```
@@ -378,4 +377,4 @@ When `APP_ENV=production`, the application refuses to start if either `ADMIN_API
 
 **Important:** the Docker Compose file currently supplies development API keys and hard-coded PostgreSQL example credentials by default. These are for local demonstration only, not production deployment. A production deployment must use securely managed secrets, appropriate database and network access controls, and a reviewed deployment configuration. Changing the API keys alone does not make the service production-ready.
 
-The application creates missing database tables automatically. The project also includes a lightweight schema migration script at `app/migrate.py`. Run `python -m app.migrate` with the correct `DATABASE_URL` configured when upgrading an existing database. The script adds the payment idempotency columns if they are missing. Alembic-based versioned migrations have not yet been implemented.
+The application does not create database tables automatically at startup. Database schema changes are managed through Alembic versioned migrations. Before starting the application locally, run `python -m alembic upgrade head` with the correct `DATABASE_URL` configured. Docker deployments apply pending migrations automatically before the API starts. When deploying updates, ensure migrations have completed successfully before serving application traffic.

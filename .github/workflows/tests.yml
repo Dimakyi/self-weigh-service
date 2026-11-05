@@ -53,5 +53,13 @@ jobs:
       - name: Verify database schema
         run: python -m alembic check
 
+      - name: Verify migration downgrade and upgrade
+        run: |
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+
+      - name: Verify database schema after migration round trip
+        run: python -m alembic check
+
       - name: Run tests against PostgreSQL
         run: python -m pytest -q

@@ -15,7 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app import audit, config, ledger, pricing, statement_pdf, statements
-from app.db import Base, engine, get_db
+from app.db import get_db
 
 from app.models import (
     Airline,
@@ -36,7 +36,6 @@ from app.security import (current_airline, current_staff, hash_key, new_airline_
                           new_staff_key, require_admin, require_kiosk)
 from app.outbox import enqueue_event
 
-Base.metadata.create_all(engine)
 app = FastAPI(title="Self Weigh Service", description="Weigh. Pay. Drop.")
 
 
