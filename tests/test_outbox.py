@@ -1,10 +1,11 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from app.db import SessionLocal
+from app.db import SessionLocal, engine
 from app.models import OutboxEvent
 from app.outbox import enqueue_event
 from app.outbox_publisher import claim_pending, publish_pending
@@ -545,3 +546,54 @@ def test_expired_lease_can_cause_duplicate_delivery(client, make_airline):
         assert saved.published_at is not None
         assert saved.claimed_by is None
         assert saved.claim_token is None
+
+
+
+def test_claim_pending_skips_row_locked_by_another_worker(client, make_airline):
+    if engine.dialect.name != "postgresql":
+        pytest.skip("SKIP LOCKED concurrency test requires PostgreSQL")
+
+    airline = make_airline("OL")
+
+    with SessionLocal() as db:
+        event = enqueue_event(
+            db,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload={"amount": 100},
+        )
+        event_id = event.id
+        db.commit()
+
+    lock_db = SessionLocal()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    try:
+        lock_db.begin()
+        lock_db.execute(
+            select(OutboxEvent.id)
+            .where(OutboxEvent.id == event_id)
+            .with_for_update()
+        ).scalar_one()
+
+        future = executor.submit(
+            claim_pending,
+            worker_id="worker-b",
+            limit=1,
+        )
+
+        assert future.result(timeout=5) == []
+
+    finally:
+        lock_db.rollback()
+        lock_db.close()
+        executor.shutdown(wait=True)
+
+    claimed = claim_pending(
+        worker_id="worker-after-lock",
+        limit=1,
+    )
+
+    assert len(claimed) == 1
+    assert claimed[0]["id"] == event_id
+    assert claimed[0]["event_type"] == "PAYMENT_RECEIVED"
