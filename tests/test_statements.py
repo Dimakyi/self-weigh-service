@@ -1,17 +1,18 @@
 import csv
 import io
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 from pypdf import PdfReader
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from conftest import ADMIN, KIOSK
 from app import config
 from app.db import SessionLocal
 from app.main import app, get_now
-from app.models import AuditEvent, LedgerEntry
+from app.models import AuditEvent, LedgerEntry, OutboxEvent
 
 AK = lambda a: {"X-Api-Key": a["api_key"]}  # noqa: E731
 
@@ -127,12 +128,42 @@ def test_statement_is_a_frozen_snapshot(client, make_airline, month_closed):
 
 def test_statement_is_anchored_in_audit_chain(client, make_airline, month_closed):
     sa = busy_month(client, make_airline)
-    h = generate(client, sa, month_closed).json()["content_hash"]
+    result = generate(client, sa, month_closed).json()
+    h = result["content_hash"]
+
     events = client.get("/airlines/me/audit", headers=AK(sa)).json()
     last = events[-1]
-    assert last["event_type"] == "STATEMENT_GENERATED" and h in last["payload"]
-    assert client.get("/airlines/me/audit/verify", headers=AK(sa)).json()["valid"] is True
 
+    assert last["event_type"] == "STATEMENT_GENERATED"
+    assert h in last["payload"]
+    assert client.get(
+        "/airlines/me/audit/verify",
+        headers=AK(sa),
+    ).json()["valid"] is True
+
+    year, month = month_closed
+
+    with SessionLocal() as db:
+        outbox_events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.airline_id == sa["id"],
+                OutboxEvent.event_type == "STATEMENT_GENERATED",
+            )
+        ).all()
+
+        assert len(outbox_events) == 1
+
+        event = outbox_events[0]
+
+        assert json.loads(event.payload) == {
+            "statement_no": f"SA-{year}-{month:02d}",
+            "year": year,
+            "month": month,
+            "content_hash": h,
+            "airline_id": sa["id"],
+        }
+        assert event.published_at is None
+        assert event.attempts == 0
 
 def test_tampered_chain_blocks_statement(client, make_airline, month_closed):
     sa = make_airline("SA")

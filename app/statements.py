@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import audit, config
+from app.outbox import enqueue_event
 from app.models import (Airline, Collector, LedgerEntry, LedgerType, Staff, Statement, Status,
                         Transaction)
 
@@ -152,9 +153,32 @@ def generate(db: Session, airline: Airline, year: int, month: int, now: datetime
     stmt = Statement(airline_id=airline.id, year=year, month=month, statement_no=data["statement_no"],
                      data=audit.canonical(data), content_hash=content_hash, generated_at=now)
     db.add(stmt)
+
     # Anchor the statement in the airline's own audit chain.
-    audit.append(db, airline.id, "STATEMENT_GENERATED", "admin",
-                 payload={"statement_no": data["statement_no"], "content_hash": content_hash})
+    audit.append(
+        db,
+        airline.id,
+        "STATEMENT_GENERATED",
+        "admin",
+        payload={
+            "statement_no": data["statement_no"],
+            "content_hash": content_hash,
+        },
+    )
+
+    enqueue_event(
+        db,
+        airline_id=airline.id,
+        event_type="STATEMENT_GENERATED",
+        payload={
+            "statement_no": data["statement_no"],
+            "year": year,
+            "month": month,
+            "content_hash": content_hash,
+            "airline_id": airline.id,
+        },
+    )
+
     db.commit()
     db.refresh(stmt)
     return stmt
