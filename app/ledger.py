@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import audit
+from app.outbox import enqueue_event
 from app.models import Airline, Collector, LedgerEntry, LedgerType, Transaction
 
 
@@ -65,6 +66,7 @@ def record_payout(db: Session, airline: Airline, amount_cents: int, reference: s
         reference=reference,
     )
     db.add(entry)
+    db.flush()
 
     audit.append(
         db,
@@ -72,6 +74,17 @@ def record_payout(db: Session, airline: Airline, amount_cents: int, reference: s
         "PAYOUT_RECORDED",
         "admin",
         payload={"amount_cents": amount_cents, "reference": reference},
+    )
+
+    enqueue_event(
+        db,
+        airline_id=locked_airline.id,
+        event_type="PAYOUT_RECORDED",
+        payload={
+            "ledger_entry_id": entry.id,
+            "amount_cents": amount_cents,
+            "reference": reference,
+        },
     )
 
     db.commit()

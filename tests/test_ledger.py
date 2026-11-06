@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -9,7 +11,7 @@ from conftest import ADMIN, KIOSK
 from app.db import SessionLocal, engine, get_db
 from app.ledger import split_fee
 from app.main import app as api_app
-from app.models import AuditEvent, LedgerEntry, LedgerType
+from app.models import AuditEvent, LedgerEntry, LedgerType, OutboxEvent
 
 H = lambda a: {"X-Api-Key": a["api_key"]}  # noqa: E731
 
@@ -50,12 +52,52 @@ def test_unpaid_and_free_bags_create_no_ledger_entries(client, make_airline):
 def test_payout_reduces_balance_and_cannot_exceed_it(client, make_airline):
     sa = make_airline("SA", service_fee_bps=0)
     pay_overweight(client, "SA", 24)            # 15000
-    r = client.post(f"/airlines/{sa['id']}/payouts", headers=ADMIN, json={"amount_cents": 10000, "reference": "EFT-1"})
+
+    r = client.post(
+        f"/airlines/{sa['id']}/payouts",
+        headers=ADMIN,
+        json={"amount_cents": 10000, "reference": "EFT-1"},
+    )
+
     assert r.status_code == 201
+    payout = r.json()
     assert balance(client, sa)["balance_due_cents"] == 5000
-    over = client.post(f"/airlines/{sa['id']}/payouts", headers=ADMIN, json={"amount_cents": 5001})
+
+    with SessionLocal() as db:
+        events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.airline_id == sa["id"],
+                OutboxEvent.event_type == "PAYOUT_RECORDED",
+            )
+        ).all()
+
+        assert len(events) == 1
+        assert json.loads(events[0].payload) == {
+            "ledger_entry_id": payout["id"],
+            "amount_cents": 10000,
+            "reference": "EFT-1",
+        }
+        assert events[0].published_at is None
+        assert events[0].attempts == 0
+
+    over = client.post(
+        f"/airlines/{sa['id']}/payouts",
+        headers=ADMIN,
+        json={"amount_cents": 5001},
+    )
+
     assert over.status_code == 409
     assert balance(client, sa)["balance_due_cents"] == 5000
+
+    with SessionLocal() as db:
+        events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.airline_id == sa["id"],
+                OutboxEvent.event_type == "PAYOUT_RECORDED",
+            )
+        ).all()
+
+        assert len(events) == 1
 
 
 def test_airline_direct_creates_no_operator_ledger(client, make_airline):
@@ -152,6 +194,19 @@ def test_simultaneous_payouts_cannot_exceed_balance(client, make_airline):
         ).all()
 
         assert len(payout_audits) == 1
+        payout_events = db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.airline_id == sa["id"],
+                OutboxEvent.event_type == "PAYOUT_RECORDED",
+            )
+        ).all()
+
+        assert len(payout_events) == 1
+        assert json.loads(payout_events[0].payload) == {
+            "ledger_entry_id": payouts[0].id,
+            "amount_cents": 30000,
+            "reference": payouts[0].reference,
+        }
 
     final_balance = balance(client, sa)
     assert final_balance["paid_out_cents"] == 30_000
