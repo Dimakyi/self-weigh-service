@@ -577,6 +577,17 @@ def waive(
         },
     )
 
+    enqueue_event(
+        db,
+        airline_id=tx.airline_id,
+        transaction_id=tx.id,
+        event_type="FEE_WAIVED",
+        payload={
+            "waived_cents": tx.fee_cents,
+            "staff_code": staff.staff_code,
+            "reason": body.reason,
+        },
+    )
     db.commit()
     db.refresh(tx)
     return tx

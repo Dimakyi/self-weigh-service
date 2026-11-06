@@ -1,8 +1,10 @@
+import json
+
 from sqlalchemy import delete, update
 
 from conftest import ADMIN, KIOSK
 from app.db import SessionLocal
-from app.models import AuditEvent
+from app.models import AuditEvent, OutboxEvent
 
 AK = lambda a: {"X-Api-Key": a["api_key"]}  # noqa: E731
 
@@ -34,6 +36,20 @@ def test_waiver_clears_fee_and_is_visible_to_airline(client, make_airline):
     assert seen["waiver_reason"] == "Flight delayed, gate agent approved"
     second = waive(client, tx, staff)
     assert second.status_code == 409
+    with SessionLocal() as db:
+        events = db.query(OutboxEvent).filter_by(
+            airline_id=sa["id"],
+            transaction_id=tx["id"],
+            event_type="FEE_WAIVED",
+        ).all()
+
+    assert len(events) == 1
+    assert json.loads(events[0].payload) == {
+        "waived_cents": 45000,
+        "staff_code": "S001",
+        "reason": "Flight delayed, gate agent approved",
+    }
+
 
 def test_waiver_needs_staff_key(client, make_airline):
     make_airline("SA")
@@ -73,6 +89,13 @@ def test_waiver_above_limit_refused(client, make_airline):
     tx = overweight(client)            # fee 45000
     assert waive(client, tx, staff).status_code == 403
     assert client.get(f"/transactions/{tx['id']}").status_code in (404, 405)  # no unscoped read endpoint
+    with SessionLocal() as db:
+        events = db.query(OutboxEvent).filter_by(
+            transaction_id=tx["id"],
+            event_type="FEE_WAIVED",
+        ).all()
+
+    assert events == []
 
 
 def test_cannot_waive_free_or_paid_bag(client, make_airline):
