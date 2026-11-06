@@ -58,3 +58,18 @@ def test_different_policies_give_different_fees():
     cheap = Policy(20, 32, 10000)
     assert quote(22, cheap).fee_cents == 20000
     assert quote(22, P).fee_cents == 0
+
+
+def test_exact_maximum_bag_weight_is_accepted():
+    result = quote(32, P)
+
+    assert not result.rejected
+    assert result.excess_kg == 9
+    assert result.fee_cents == 135000
+
+
+def test_weight_above_maximum_bag_weight_is_rejected():
+    result = quote(32.01, P)
+
+    assert result.rejected
+    assert result.fee_cents == 0

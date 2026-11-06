@@ -93,3 +93,19 @@ def test_passenger_verification_rejects_blank_details(client):
     )
 
     assert response.status_code == 422
+
+def test_passenger_verification_normalizes_name_spacing_and_case(client):
+    response = client.post(
+        "/passenger/verify",
+        headers=KIOSK,
+        json={
+            "passenger_name": "  TEST   Passenger ",
+            "boarding_pass_name": "test passenger",
+            "flight_number": "sa123",
+            "boarding_pass_flight": "SA123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["matched"] is True
+    assert response.json()["mode"] == "SIMULATION"

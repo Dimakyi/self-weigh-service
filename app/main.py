@@ -268,7 +268,7 @@ class TransactionOut(BaseModel):
 )
 def verify_passenger(body: PassengerVerificationRequest):
     matched = (
-        body.passenger_name.casefold() == body.boarding_pass_name.casefold()
+        " ".join(body.passenger_name.casefold().split()) == " ".join(body.boarding_pass_name.casefold().split())
         and body.flight_number.upper() == body.boarding_pass_flight.upper()
     )
 
@@ -314,6 +314,19 @@ def _airline_by_code(db: Session, code: str) -> Airline:
 
 @app.post("/weigh", response_model=TransactionOut, status_code=201, dependencies=[Depends(require_kiosk)])
 def weigh(req: WeighRequest, db: Session = Depends(get_db), scale: Scale = Depends(get_scale)):
+    restricted_environment = config.APP_ENV in {"staging", "production"}
+
+    if restricted_environment and req.weight_kg is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Manually submitted weights are disabled in this environment.",
+        )
+
+    if restricted_environment and isinstance(scale, SimulatedScale):
+        raise HTTPException(
+            status_code=503,
+            detail="A physical scale is not configured. Please use the staffed counter.",
+        )    
     airline = _airline_by_code(db, req.airline_code)
     weight = req.weight_kg if req.weight_kg is not None else scale.read_kg()
     if not math.isfinite(weight) or weight <= 0:
@@ -352,9 +365,6 @@ def weigh(req: WeighRequest, db: Session = Depends(get_db), scale: Scale = Depen
     db.commit()
     db.refresh(tx)
     return tx
-
-
-
 
 @app.post(
     "/transactions/{tx_id}/pay",

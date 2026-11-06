@@ -6,6 +6,7 @@ from app.db import SessionLocal
 from app.main import app as api_app, get_scale, WeighRequest
 from app.models import Transaction, Status
 from sqlalchemy import select
+from app import config
 from app.models import AuditEvent, LedgerEntry, LedgerType, OutboxEvent
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -351,6 +352,39 @@ def test_simulated_scale_reading(client, make_airline):
     make_airline("SA")
     r = client.post("/weigh", headers=KIOSK, json={"airline_code": "SA"})
     assert r.status_code == 201
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_manual_weights_rejected_outside_development(
+    client, make_airline, monkeypatch, environment
+):
+    make_airline("SA")
+    monkeypatch.setattr(config, "APP_ENV", environment)
+
+    response = weigh(client, "SA", 20)
+
+    assert response.status_code == 422
+
+    with SessionLocal() as db:
+        assert db.query(Transaction).count() == 0
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_simulated_scale_unavailable_outside_development(
+    client, make_airline, monkeypatch, environment
+):
+    make_airline("SA")
+    monkeypatch.setattr(config, "APP_ENV", environment)
+
+    response = client.post(
+        "/weigh",
+        headers=KIOSK,
+        json={"airline_code": "SA"},
+    )
+
+    assert response.status_code == 503
+
+    with SessionLocal() as db:
+        assert db.query(Transaction).count() == 0    
 
 
 def test_each_airline_uses_its_own_rules(client, make_airline):
