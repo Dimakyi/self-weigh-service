@@ -42,3 +42,14 @@ DEFAULT_EXCESS_RATE_CENTS_PER_KG = int(os.getenv("DEFAULT_EXCESS_RATE_CENTS_PER_
 
 # Statements and cash reconciliation use this timezone for month and day boundaries.
 TIMEZONE = os.getenv("TIMEZONE", "Africa/Johannesburg")
+
+# Outbox worker settings (python -m app.worker).
+WORKER_POLL_SECONDS = float(os.getenv("WORKER_POLL_SECONDS", "2"))
+WORKER_BATCH_SIZE = int(os.getenv("WORKER_BATCH_SIZE", "100"))
+WORKER_LEASE_SECONDS = int(os.getenv("WORKER_LEASE_SECONDS", "60"))
+
+if WORKER_POLL_SECONDS <= 0 or WORKER_BATCH_SIZE < 1 or WORKER_LEASE_SECONDS < 1:
+    raise RuntimeError(
+        "WORKER_POLL_SECONDS must be above 0, and WORKER_BATCH_SIZE and "
+        "WORKER_LEASE_SECONDS must be at least 1."
+    )

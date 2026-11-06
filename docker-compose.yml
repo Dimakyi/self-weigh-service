@@ -24,6 +24,20 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+psycopg2://selfweigh:selfweigh@db:5432/selfweigh
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
+      KIOSK_API_KEY: ${KIOSK_API_KEY:-dev-kiosk-key}
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
   selfweigh_data:
