@@ -1,4 +1,5 @@
 import pytest
+import uuid
 from pydantic import ValidationError
 
 from conftest import ADMIN, KIOSK
@@ -10,6 +11,7 @@ from app import config
 from app.models import AuditEvent, LedgerEntry, LedgerType, OutboxEvent
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 from app.db import get_db
@@ -584,3 +586,196 @@ def test_invalid_scale_reading_returns_503_without_transaction(
 
     with SessionLocal() as db:
         assert db.query(Transaction).count() == 0
+
+
+def test_dead_letter_listing_requires_admin_key(client):
+    response = client.get("/admin/outbox/dead-lettered")
+
+    assert response.status_code == 401
+
+
+def test_dead_letter_listing_returns_only_dead_lettered_events(
+    client, make_airline
+):
+    airline = make_airline("DL")
+    now = datetime.now(timezone.utc)
+
+    with SessionLocal() as db:
+        dead_event = OutboxEvent(
+            id=str(uuid.uuid4()),
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload='{"amount_cents":100}',
+            created_at=now,
+            attempts=5,
+            last_error="Delivery failed",
+            dead_lettered_at=now,
+        )
+        pending_event = OutboxEvent(
+            id=str(uuid.uuid4()),
+            airline_id=airline["id"],
+            event_type="TRANSACTION_WEIGHED",
+            payload='{"weight_kg":20}',
+            created_at=now,
+            attempts=1,
+        )
+        db.add_all([dead_event, pending_event])
+        db.commit()
+        dead_event_id = dead_event.id
+
+    response = client.get(
+        "/admin/outbox/dead-lettered",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 200
+    results = response.json()
+
+    assert len(results) == 1
+    assert results[0]["id"] == dead_event_id
+    assert results[0]["airline_id"] == airline["id"]
+    assert results[0]["attempts"] == 5
+    assert results[0]["last_error"] == "Delivery failed"
+
+
+@pytest.mark.parametrize("limit", [0, 501])
+def test_dead_letter_listing_rejects_invalid_limit(client, limit):
+    response = client.get(
+        f"/admin/outbox/dead-lettered?limit={limit}",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 422
+
+
+def test_requeue_dead_lettered_event_requires_admin_key(client):
+    response = client.post(
+        f"/admin/outbox/{uuid.uuid4()}/requeue"
+    )
+
+    assert response.status_code == 401
+
+
+def test_requeue_dead_lettered_event_returns_404_for_unknown_id(client):
+    response = client.post(
+        f"/admin/outbox/{uuid.uuid4()}/requeue",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 404
+
+
+def test_requeue_rejects_event_that_is_not_dead_lettered(
+    client, make_airline
+):
+    airline = make_airline("RQ")
+    now = datetime.now(timezone.utc)
+
+    with SessionLocal() as db:
+        event = OutboxEvent(
+            id=str(uuid.uuid4()),
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload='{"amount_cents":100}',
+            created_at=now,
+            attempts=1,
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+    response = client.post(
+        f"/admin/outbox/{event_id}/requeue",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 409
+
+
+def test_requeue_dead_lettered_event_resets_state_and_records_audit(
+    client, make_airline
+):
+    airline = make_airline("RQ")
+    now = datetime.now(timezone.utc)
+    event_id = str(uuid.uuid4())
+
+    with SessionLocal() as db:
+        event = OutboxEvent(
+            id=event_id,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload='{"amount_cents":100}',
+            created_at=now,
+            attempts=5,
+            last_error="Delivery failed",
+            dead_lettered_at=now,
+        )
+        db.add(event)
+        db.commit()
+
+    response = client.post(
+        f"/admin/outbox/{event_id}/requeue",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["event_id"] == event_id
+
+    with SessionLocal() as db:
+        event = db.get(OutboxEvent, event_id)
+
+        assert event is not None
+        assert event.attempts == 0
+        assert event.dead_lettered_at is None
+        assert event.last_error is None
+        assert event.next_attempt_at is None
+        assert event.claimed_by is None
+        assert event.claim_token is None
+        assert event.claimed_until is None
+
+        audit_event = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.airline_id == airline["id"],
+                AuditEvent.event_type == "OUTBOX_EVENT_REQUEUED",
+            )
+        )
+
+        assert audit_event is not None
+        assert audit_event.actor == "admin"
+        assert event_id in audit_event.payload
+        assert "PAYMENT_RECEIVED" in audit_event.payload
+        assert "5" in audit_event.payload
+
+
+def test_requeue_same_event_twice_is_rejected(
+    client, make_airline
+):
+    airline = make_airline("RQ")
+    now = datetime.now(timezone.utc)
+    event_id = str(uuid.uuid4())
+
+    with SessionLocal() as db:
+        event = OutboxEvent(
+            id=event_id,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload='{"amount_cents":100}',
+            created_at=now,
+            attempts=5,
+            last_error="Delivery failed",
+            dead_lettered_at=now,
+        )
+        db.add(event)
+        db.commit()
+
+    first = client.post(
+        f"/admin/outbox/{event_id}/requeue",
+        headers=ADMIN,
+    )
+    second = client.post(
+        f"/admin/outbox/{event_id}/requeue",
+        headers=ADMIN,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409

@@ -221,6 +221,17 @@ class AuditVerifyOut(BaseModel):
     head_hash: str
 
 
+class OutboxDeadLetterOut(BaseModel):
+    id: str
+    airline_id: int
+    event_type: str
+    created_at: datetime
+    attempts: int
+    last_error: str | None
+    dead_lettered_at: datetime
+    model_config = {"from_attributes": True}
+
+
 class StatementListItem(BaseModel):
     statement_no: str
     year: int
@@ -802,3 +813,98 @@ def list_reconciliations(only_variances: bool = False, db: Session = Depends(get
     if only_variances:
         q = q.where(CashReconciliation.variance_cents != 0)
     return [_recon_out(r) for r in db.scalars(q).all()]
+
+
+# ---------- admin: outbox dead letters ----------
+
+@app.get(
+    "/admin/outbox/dead-lettered",
+    response_model=list[OutboxDeadLetterOut],
+    dependencies=[Depends(require_admin)],
+)
+def list_dead_lettered_events(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    if not 1 <= limit <= 500:
+        raise HTTPException(422, "Limit must be between 1 and 500")
+
+    q = (
+        select(OutboxEvent)
+        .where(OutboxEvent.dead_lettered_at.is_not(None))
+        .order_by(
+            OutboxEvent.dead_lettered_at.desc(),
+            OutboxEvent.created_at.desc(),
+        )
+        .limit(limit)
+    )
+    return db.scalars(q).all()
+
+@app.post(
+    "/admin/outbox/{event_id}/requeue",
+    status_code=200,
+    dependencies=[Depends(require_admin)],
+)
+def requeue_dead_lettered_event(
+    event_id: str,
+    db: Session = Depends(get_db),
+):
+    event = db.scalar(
+        select(OutboxEvent).where(OutboxEvent.id == event_id)
+    )
+
+    if event is None:
+        raise HTTPException(404, "Outbox event not found")
+
+    if (
+        event.dead_lettered_at is None
+        or event.published_at is not None
+    ):
+        raise HTTPException(409, "Event is not eligible for requeue")
+
+    previous_attempts = event.attempts
+
+    result = db.execute(
+        update(OutboxEvent)
+        .where(
+            OutboxEvent.id == event_id,
+            OutboxEvent.dead_lettered_at.is_not(None),
+            OutboxEvent.published_at.is_(None),
+            OutboxEvent.claimed_until.is_(None),
+            OutboxEvent.claimed_by.is_(None),
+            OutboxEvent.claim_token.is_(None),
+        )
+        .values(
+            attempts=0,
+            dead_lettered_at=None,
+            last_error=None,
+            next_attempt_at=None,
+            claimed_by=None,
+            claim_token=None,
+            claimed_until=None,
+        )
+    )
+
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "Event is no longer eligible for requeue")
+
+    audit.append(
+        db,
+        event.airline_id,
+        "OUTBOX_EVENT_REQUEUED",
+        "admin",
+        event.transaction_id,
+        {
+            "event_id": event.id,
+            "event_type": event.event_type,
+            "previous_attempts": previous_attempts,
+        },
+    )
+
+    db.commit()
+
+    return {
+        "message": "Event successfully requeued",
+        "event_id": event_id,
+    }
