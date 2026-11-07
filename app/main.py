@@ -824,10 +824,14 @@ def list_reconciliations(only_variances: bool = False, db: Session = Depends(get
 )
 def list_dead_lettered_events(
     limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
     if not 1 <= limit <= 500:
         raise HTTPException(422, "Limit must be between 1 and 500")
+
+    if offset < 0:
+        raise HTTPException(422, "Offset must be zero or greater")
 
     q = (
         select(OutboxEvent)
@@ -835,8 +839,10 @@ def list_dead_lettered_events(
         .order_by(
             OutboxEvent.dead_lettered_at.desc(),
             OutboxEvent.created_at.desc(),
+            OutboxEvent.id.desc(),
         )
         .limit(limit)
+        .offset(offset)
     )
     return db.scalars(q).all()
 

@@ -638,6 +638,65 @@ def test_dead_letter_listing_returns_only_dead_lettered_events(
     assert results[0]["last_error"] == "Delivery failed"
 
 
+
+def test_dead_letter_listing_supports_offset_pagination(
+    client, make_airline
+):
+    airline = make_airline("PG")
+    now = datetime.now(timezone.utc)
+
+    event_ids = [
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+    ]
+
+    with SessionLocal() as db:
+        events = [
+            OutboxEvent(
+                id=event_id,
+                airline_id=airline["id"],
+                event_type="PAYMENT_RECEIVED",
+                payload='{"amount_cents":100}',
+                created_at=now,
+                attempts=5,
+                last_error="Delivery failed",
+                dead_lettered_at=now,
+            )
+            for event_id in event_ids
+        ]
+        db.add_all(events)
+        db.commit()
+
+    first_page = client.get(
+        "/admin/outbox/dead-lettered?limit=2&offset=0",
+        headers=ADMIN,
+    )
+    second_page = client.get(
+        "/admin/outbox/dead-lettered?limit=2&offset=2",
+        headers=ADMIN,
+    )
+
+    assert first_page.status_code == 200
+    assert second_page.status_code == 200
+
+    first_ids = [event["id"] for event in first_page.json()]
+    second_ids = [event["id"] for event in second_page.json()]
+
+    assert len(first_ids) == 2
+    assert len(second_ids) == 1
+    assert set(first_ids).isdisjoint(second_ids)
+    assert set(first_ids + second_ids) == set(event_ids)
+
+
+def test_dead_letter_listing_rejects_negative_offset(client):
+    response = client.get(
+        "/admin/outbox/dead-lettered?offset=-1",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 422
+
 @pytest.mark.parametrize("limit", [0, 501])
 def test_dead_letter_listing_rejects_invalid_limit(client, limit):
     response = client.get(
