@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 106 automated tests passed locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 144 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 49.46s. The 2 skipped tests are PostgreSQL-only concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they run when `DATABASE_URL` points at PostgreSQL, as in the CI workflow. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
@@ -34,9 +34,11 @@ This repo is the software side of that idea. The scale is simulated, so no hardw
 - [x] **Step 4:** monthly airline statements (PDF summary + CSV detail) and cash reconciliation
 - [ ] **Step 5:** events and an operations dashboard
   - [x] 5a: transactional outbox and a lease-based publisher (see [Event outbox](#event-outbox))
-  - [ ] 5b: queue remaining events for waivers, payouts and statements (`TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED` are queued today)
-  - [ ] 5c: a worker process that runs the publisher, and a Kafka producer plus broker in Docker Compose
-  - [ ] 5d: retry limits and dead-letter handling for events that keep failing
+  - [x] 5b: queue remaining events for waivers, payouts and statements (`FEE_WAIVED`, `PAYOUT_RECORDED` and `STATEMENT_GENERATED` are queued alongside `TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED`)
+  - [ ] 5c: Kafka producer and broker in Docker Compose
+    - [x] Worker process (`python -m app.worker`) and a `worker` service in Docker Compose; events are logged for now
+    - [ ] Kafka producer and broker
+  - [x] 5d: retry limits, exponential backoff and dead-letter handling
   - [ ] 5e: operations dashboard
 
 ## Flow
@@ -184,10 +186,13 @@ Downstream systems (the planned Kafka feed and operations dashboard) need to hea
 - **Written with the action.** `enqueue_event` adds a row to `outbox_events` in the caller's own database transaction. The transaction, its audit event and its outbox event are saved in one commit, or none of them are.
 - **Delivered separately.** `publish_pending(deliver)` claims pending events, hands each one to a delivery function and records the outcome. The delivery function is a parameter, so the broker can be swapped in later without touching the outbox.
 - **Safe with several workers.** Claims are short transactions. On PostgreSQL they use `FOR UPDATE SKIP LOCKED`, so two workers don't take the same event. Each claim has a lease (default 60 seconds) and a unique claim token, so a crashed worker's events become available again once the lease expires, and a worker that finishes late cannot overwrite the result of whoever took over.
-- **Failures are recorded.** A failed delivery increments `attempts`, stores `last_error` and leaves the event pending for another try.
 - **At-least-once.** An event can be delivered more than once (for example, if a worker dies after delivering but before recording success), so **consumers must deduplicate by event ID**.
 
-**Current state:** `TRANSACTION_WEIGHED` (from `POST /weigh`) and `PAYMENT_RECEIVED` (from `POST /transactions/{tx_id}/pay`) are queued in the same database transaction as their corresponding actions. Nothing runs `publish_pending` yet, and there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml`. Failed events are retried indefinitely, with no backoff, retry cap or dead-letter handling. Waiver, payout and statement events are not queued yet.
+**Retries and dead-lettering.** A failed delivery increments `attempts`, stores `last_error` and schedules the next try with exponential backoff (`OUTBOX_RETRY_BASE_SECONDS`, doubling up to `OUTBOX_RETRY_MAX_SECONDS`). After `OUTBOX_MAX_ATTEMPTS` failures the event gets a `dead_lettered_at` timestamp and is no longer claimed. There is no endpoint yet to inspect or requeue dead-lettered events.
+
+**Worker.** `python -m app.worker` (the `worker` service in Docker Compose) polls the outbox and runs the publisher until it receives SIGINT or SIGTERM. A failed batch, for example a database outage, is logged and retried; it does not stop the loop.
+
+**Current state:** `TRANSACTION_WEIGHED`, `PAYMENT_RECEIVED`, `FEE_WAIVED`, `PAYOUT_RECORDED` and `STATEMENT_GENERATED` are queued in the same database transaction as their actions. The worker currently delivers events to the log only: there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml` yet.
 
 ## Simulated passenger verification
 
@@ -370,6 +375,12 @@ If PowerShell blocks virtual-environment activation, see the [official Python do
 | `DEFAULT_ALLOWANCE_KG` | `23` | Default allowance for newly created airlines |
 | `DEFAULT_MAX_BAG_KG` | `32` | Default maximum bag weight |
 | `DEFAULT_EXCESS_RATE_CENTS_PER_KG` | `15000` | Illustrative default excess fee rate |
+| `WORKER_POLL_SECONDS` | `2` | Outbox worker wait between polls when nothing was published |
+| `WORKER_BATCH_SIZE` | `100` | Events claimed per publisher batch |
+| `WORKER_LEASE_SECONDS` | `60` | How long a worker holds a claim before another may take over |
+| `OUTBOX_MAX_ATTEMPTS` | `5` | Failed deliveries before an event is dead-lettered |
+| `OUTBOX_RETRY_BASE_SECONDS` | `2` | First retry delay; doubles on each failure |
+| `OUTBOX_RETRY_MAX_SECONDS` | `300` | Upper limit on the retry delay |
 
 ### Production configuration safeguards
 
