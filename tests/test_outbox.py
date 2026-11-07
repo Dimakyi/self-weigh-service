@@ -257,9 +257,9 @@ def test_publish_pending_uses_exponential_backoff(client, make_airline):
             saved = db.get(OutboxEvent, event_id)
 
             assert saved.attempts == attempt + 1
-            assert saved.next_attempt_at is not None
-            assert saved.dead_lettered_at is None
 
+            assert saved.dead_lettered_at is None
+            assert saved.next_attempt_at is not None
             retry_at = saved.next_attempt_at
             if retry_at.tzinfo is None:
                 retry_at = retry_at.replace(tzinfo=timezone.utc)
@@ -709,3 +709,52 @@ def test_claim_pending_skips_row_locked_by_another_worker(client, make_airline):
     assert len(claimed) == 1
     assert claimed[0]["id"] == event_id
     assert claimed[0]["event_type"] == "PAYMENT_RECEIVED"
+
+
+def test_publish_pending_handles_very_high_max_attempts(
+    client,
+    make_airline,
+    monkeypatch,
+):
+    import app.outbox_publisher as publisher
+
+    monkeypatch.setattr(publisher, "OUTBOX_MAX_ATTEMPTS", 2000)
+    monkeypatch.setattr(publisher, "OUTBOX_RETRY_BASE_SECONDS", 2)
+    monkeypatch.setattr(publisher, "OUTBOX_RETRY_MAX_SECONDS", 300)
+
+    airline = make_airline("OH")
+
+    with SessionLocal() as db:
+        event = enqueue_event(
+            db,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload={"amount": 100},
+        )
+        event_id = event.id
+        db.commit()
+
+    def fail_delivery(event_id, event_type, payload):
+        raise RuntimeError("temporary failure")
+
+    for attempt in range(2000):
+        count = publisher.publish_pending(
+            fail_delivery,
+            worker_id=f"high-attempt-worker-{attempt}",
+        )
+
+        assert count == 0
+
+        with SessionLocal() as db:
+            saved = db.get(OutboxEvent, event_id)
+
+            assert saved.attempts == attempt + 1
+
+            if attempt < 1999:
+                assert saved.dead_lettered_at is None
+                assert saved.next_attempt_at is not None
+                saved.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                db.commit()
+            else:
+                assert saved.dead_lettered_at is not None
+                assert saved.next_attempt_at is None

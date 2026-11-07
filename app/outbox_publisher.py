@@ -153,12 +153,22 @@ def publish_pending(
             if error is not None
             else event["attempts"]
         )
+        retry_exponent = max(0, failure_count - 1)
 
         retry_delay = min(
-            OUTBOX_RETRY_BASE_SECONDS * (2 ** (failure_count - 1)),
+            OUTBOX_RETRY_BASE_SECONDS,
             OUTBOX_RETRY_MAX_SECONDS,
         )
 
+        while retry_exponent > 0:
+            retry_delay = min(
+                retry_delay * 2,
+                OUTBOX_RETRY_MAX_SECONDS,
+            )
+            retry_exponent -= 1
+
+            if retry_delay >= OUTBOX_RETRY_MAX_SECONDS:
+                break
         dead_lettered = failure_count >= OUTBOX_MAX_ATTEMPTS
         now = datetime.now(timezone.utc)
 
