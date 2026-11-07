@@ -5,9 +5,11 @@ import sys
 import pytest
 
 
-def run_config(*, app_env, admin_key=None, kiosk_key=None):
+def run_config(*, app_env, admin_key=None, kiosk_key=None, extra_env=None):
     env = os.environ.copy()
     env["APP_ENV"] = app_env
+    if extra_env:
+        env.update(extra_env)
 
     if admin_key is None:
         env.pop("ADMIN_API_KEY", None)
@@ -112,3 +114,35 @@ def test_development_allows_default_api_keys():
         "dev-admin-key",
         "dev-kiosk-key",
     ]
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "error_message"),
+    [
+        (
+            "OUTBOX_MAX_ATTEMPTS",
+            "0",
+            "OUTBOX_MAX_ATTEMPTS must be at least 1",
+        ),
+        (
+            "OUTBOX_RETRY_BASE_SECONDS",
+            "0",
+            "OUTBOX_RETRY_BASE_SECONDS must be above 0",
+        ),
+        (
+            "OUTBOX_RETRY_MAX_SECONDS",
+            "1",
+            "OUTBOX_RETRY_MAX_SECONDS must be at least the base delay",
+        ),
+    ],
+)
+def test_config_rejects_invalid_outbox_retry_settings(
+    setting, value, error_message
+):
+    result = run_config(
+        app_env="development",
+        extra_env={setting: value},
+    )
+
+    assert result.returncode != 0
+    assert error_message in result.stderr

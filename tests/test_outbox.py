@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app.db import SessionLocal, engine
 from app.models import OutboxEvent
@@ -219,6 +219,68 @@ def test_publish_pending_records_failure_for_retry(client, make_airline):
         assert saved.published_at is None
         assert saved.attempts == 1
         assert saved.last_error == "temporary delivery failure"
+        assert saved.next_attempt_at is not None
+        assert saved.dead_lettered_at is None
+
+
+def test_publish_pending_uses_exponential_backoff(client, make_airline):
+    airline = make_airline("BK")
+
+    with SessionLocal() as db:
+        event = enqueue_event(
+            db,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload={"amount": 100},
+        )
+        event_id = event.id
+        db.commit()
+
+    def fail_delivery(event_id, event_type, payload):
+        raise RuntimeError("temporary delivery failure")
+
+    expected_delays = [2, 4, 8, 16]
+
+    for attempt, expected_delay in enumerate(expected_delays):
+        before = datetime.now(timezone.utc)
+
+        count = publish_pending(
+            fail_delivery,
+            worker_id=f"backoff-worker-{attempt}",
+        )
+
+        after = datetime.now(timezone.utc)
+
+        assert count == 0
+
+        with SessionLocal() as db:
+            saved = db.get(OutboxEvent, event_id)
+
+            assert saved.attempts == attempt + 1
+            assert saved.next_attempt_at is not None
+            assert saved.dead_lettered_at is None
+
+            retry_at = saved.next_attempt_at
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+
+            actual_delay = (retry_at - before).total_seconds()
+
+            assert expected_delay - 0.5 <= actual_delay <= (
+                expected_delay + (after - before).total_seconds() + 0.5
+            )
+
+        if attempt < 3:
+            with SessionLocal() as db:
+                db.execute(
+                    update(OutboxEvent)
+                    .where(OutboxEvent.id == event_id)
+                    .values(
+                        next_attempt_at=datetime.now(timezone.utc)
+                        - timedelta(seconds=1)
+                    )
+                )
+                db.commit()
 
 
 def test_publish_pending_rejects_invalid_limit():
@@ -228,6 +290,56 @@ def test_publish_pending_rejects_invalid_limit():
                 lambda event_id, event_type, payload: None,
                 limit=0,
             )
+
+
+def test_publish_pending_dead_letters_after_max_attempts(
+    client, make_airline
+):
+    airline = make_airline("DL")
+
+    with SessionLocal() as db:
+        event = enqueue_event(
+            db,
+            airline_id=airline["id"],
+            event_type="PAYMENT_RECEIVED",
+            payload={"amount": 100},
+        )
+        event_id = event.id
+        db.commit()
+
+    def fail_delivery(event_id, event_type, payload):
+        raise RuntimeError("permanent delivery failure")
+
+    for attempt in range(5):
+        count = publish_pending(
+            fail_delivery,
+            worker_id=f"dead-letter-worker-{attempt}",
+        )
+
+        assert count == 0
+
+        if attempt < 4:
+            with SessionLocal() as db:
+                db.execute(
+                    update(OutboxEvent)
+                    .where(OutboxEvent.id == event_id)
+                    .values(
+                        next_attempt_at=datetime.now(timezone.utc)
+                        - timedelta(seconds=1)
+                    )
+                )
+                db.commit()
+
+    with SessionLocal() as db:
+        saved = db.get(OutboxEvent, event_id)
+
+        assert saved.attempts == 5
+        assert saved.published_at is None
+        assert saved.dead_lettered_at is not None
+        assert saved.next_attempt_at is None
+        assert saved.last_error == "permanent delivery failure"
+
+    assert claim_pending(worker_id="after-dead-letter") == []
 
 
 def test_publish_pending_rejects_empty_worker_id():

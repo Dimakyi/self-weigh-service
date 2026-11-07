@@ -53,3 +53,23 @@ if WORKER_POLL_SECONDS <= 0 or WORKER_BATCH_SIZE < 1 or WORKER_LEASE_SECONDS < 1
         "WORKER_POLL_SECONDS must be above 0, and WORKER_BATCH_SIZE and "
         "WORKER_LEASE_SECONDS must be at least 1."
     )
+
+# Outbox retry and dead-letter settings.
+OUTBOX_MAX_ATTEMPTS = int(os.getenv("OUTBOX_MAX_ATTEMPTS", "5"))
+OUTBOX_RETRY_BASE_SECONDS = float(
+    os.getenv("OUTBOX_RETRY_BASE_SECONDS", "2")
+)
+OUTBOX_RETRY_MAX_SECONDS = float(
+    os.getenv("OUTBOX_RETRY_MAX_SECONDS", "300")
+)
+
+if (
+    OUTBOX_MAX_ATTEMPTS < 1
+    or OUTBOX_RETRY_BASE_SECONDS <= 0
+    or OUTBOX_RETRY_MAX_SECONDS < OUTBOX_RETRY_BASE_SECONDS
+):
+    raise RuntimeError(
+        "OUTBOX_MAX_ATTEMPTS must be at least 1, "
+        "OUTBOX_RETRY_BASE_SECONDS must be above 0, and "
+        "OUTBOX_RETRY_MAX_SECONDS must be at least the base delay."
+    )

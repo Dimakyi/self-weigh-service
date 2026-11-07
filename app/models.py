@@ -173,6 +173,14 @@ class OutboxEvent(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     claimed_by: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )

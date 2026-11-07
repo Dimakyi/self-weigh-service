@@ -3,8 +3,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
+from app.config import (
+    OUTBOX_MAX_ATTEMPTS,
+    OUTBOX_RETRY_BASE_SECONDS,
+    OUTBOX_RETRY_MAX_SECONDS,
+)
 from app.db import SessionLocal
 from app.models import OutboxEvent
 
@@ -36,8 +41,15 @@ def claim_pending(
                 select(OutboxEvent.id)
                 .where(
                     OutboxEvent.published_at.is_(None),
-                    (OutboxEvent.claimed_until.is_(None))
-                    | (OutboxEvent.claimed_until < now),
+                    OutboxEvent.dead_lettered_at.is_(None),
+                    or_(
+                        OutboxEvent.next_attempt_at.is_(None),
+                        OutboxEvent.next_attempt_at <= now,
+                    ),
+                    or_(
+                        OutboxEvent.claimed_until.is_(None),
+                        OutboxEvent.claimed_until < now,
+                    ),
                 )
                 .order_by(OutboxEvent.created_at, OutboxEvent.id)
                 .limit(limit)
@@ -56,8 +68,15 @@ def claim_pending(
                 .where(
                     OutboxEvent.id.in_(event_ids),
                     OutboxEvent.published_at.is_(None),
-                    (OutboxEvent.claimed_until.is_(None))
-                    | (OutboxEvent.claimed_until < now),
+                    OutboxEvent.dead_lettered_at.is_(None),
+                    or_(
+                        OutboxEvent.next_attempt_at.is_(None),
+                        OutboxEvent.next_attempt_at <= now,
+                    ),
+                    or_(
+                        OutboxEvent.claimed_until.is_(None),
+                        OutboxEvent.claimed_until < now,
+                    ),
                 )
                 .values(
                     claimed_by=worker_id,
@@ -71,6 +90,7 @@ def claim_pending(
                     OutboxEvent.id,
                     OutboxEvent.event_type,
                     OutboxEvent.payload,
+                    OutboxEvent.attempts,
                     OutboxEvent.claim_token,
                 ).where(
                     OutboxEvent.id.in_(event_ids),
@@ -83,6 +103,7 @@ def claim_pending(
                     "id": row.id,
                     "event_type": row.event_type,
                     "payload": row.payload,
+                    "attempts": row.attempts,
                     "claim_token": row.claim_token,
                 }
                 for row in rows
@@ -127,6 +148,18 @@ def publish_pending(
         except Exception as exc:
             error = str(exc)[:1000] or type(exc).__name__
 
+        failure_count = (
+            event["attempts"] + 1
+            if error is not None
+            else event["attempts"]
+        )
+
+        retry_delay = min(
+            OUTBOX_RETRY_BASE_SECONDS * (2 ** (failure_count - 1)),
+            OUTBOX_RETRY_MAX_SECONDS,
+        )
+
+        dead_lettered = failure_count >= OUTBOX_MAX_ATTEMPTS
         now = datetime.now(timezone.utc)
 
         with SessionLocal() as db:
@@ -141,9 +174,20 @@ def publish_pending(
                     )
                     .values(
                         published_at=now if error is None else None,
-                        attempts=OutboxEvent.attempts
-                        + (1 if error is not None else 0),
+                        attempts=(
+                            OutboxEvent.attempts + 1
+                            if error is not None
+                            else OutboxEvent.attempts
+                        ),
                         last_error=error,
+                        next_attempt_at=(
+                            None
+                            if error is None or dead_lettered
+                            else now + timedelta(seconds=retry_delay)
+                        ),
+                        dead_lettered_at=(
+                            now if error is not None and dead_lettered else None
+                        ),
                         claimed_by=None,
                         claim_token=None,
                         claimed_until=None,
