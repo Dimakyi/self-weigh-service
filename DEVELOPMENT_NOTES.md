@@ -217,7 +217,7 @@ python -m pytest -q
 
 The most recently verified full local test run, using Python 3.12, reported:
 
-**144 passed, 2 skipped, 1 warning in 49.46 seconds.**
+**144 passed, 2 skipped, 1 warning in 49.04 seconds.**
 
 The two skipped tests cover PostgreSQL-specific concurrency behaviour:
 

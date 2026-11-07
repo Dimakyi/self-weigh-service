@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 144 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 49.46s. The 2 skipped tests are PostgreSQL-only concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they run when `DATABASE_URL` points at PostgreSQL, as in the CI workflow. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 144 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 49.04s. The 2 skipped tests are PostgreSQL-only concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they run when `DATABASE_URL` points at PostgreSQL, as in the CI workflow. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
