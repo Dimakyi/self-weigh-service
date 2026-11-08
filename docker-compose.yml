@@ -12,6 +12,36 @@ services:
       interval: 5s
       retries: 10
 
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.6
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --default-log-level=info
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   api:
     build: .
     environment:
@@ -33,12 +63,18 @@ services:
       DATABASE_URL: postgresql+psycopg2://selfweigh:selfweigh@db:5432/selfweigh
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
       KIOSK_API_KEY: ${KIOSK_API_KEY:-dev-kiosk-key}
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_TOPIC: selfweigh.events
+      KAFKA_DELIVERY_TIMEOUT_SECONDS: "10"
     depends_on:
       db:
         condition: service_healthy
       api:
         condition: service_started
+      redpanda:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   selfweigh_data:
+  redpanda_data:

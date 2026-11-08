@@ -1,8 +1,5 @@
-"""Outbox worker: repeatedly runs the publisher until told to stop.
+"""Outbox worker: repeatedly publishes pending events until stopped."""
 
-Run with ``python -m app.worker``. Until a Kafka producer is added, events are
-delivered to ``log_delivery``, which writes each one to the log.
-"""
 import json
 import logging
 import os
@@ -17,13 +14,36 @@ logger = logging.getLogger("selfweigh.worker")
 
 
 def log_delivery(event_id: str, event_type: str, payload: dict) -> None:
-    """Stand-in delivery function: log the event instead of sending it."""
+    """Log an event instead of sending it to an external broker."""
     logger.info(
         "event %s %s %s",
         event_id,
         event_type,
         json.dumps(payload, sort_keys=True),
     )
+
+
+def make_kafka_delivery(producer) -> DeliveryFunction:
+    """Adapt the Kafka producer to the outbox delivery interface."""
+
+    def deliver(event_id: str, event_type: str, payload: dict) -> None:
+        message = json.dumps(
+            {
+                "event_id": event_id,
+                "event_type": event_type,
+                "payload": payload,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        producer.send(
+            config.KAFKA_TOPIC,
+            event_id,
+            message,
+        )
+
+    return deliver
 
 
 def default_worker_id() -> str:
@@ -39,13 +59,7 @@ def run_forever(
     lease_seconds: int = config.WORKER_LEASE_SECONDS,
     worker_id: str | None = None,
 ) -> None:
-    """Publish pending events until ``stop`` is set.
-
-    A failed batch (for example the database is down, or the tables do not
-    exist yet) is logged and retried after ``poll_seconds``; it never ends the
-    loop. When nothing was published the worker waits ``poll_seconds`` before
-    polling again, and the wait ends immediately if ``stop`` is set.
-    """
+    """Publish pending events until told to stop."""
     worker_id = worker_id or default_worker_id()
     logger.info("worker %s started", worker_id)
 
@@ -72,6 +86,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
     stop = threading.Event()
 
     def request_stop(signum, frame):
@@ -80,7 +95,21 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
-    run_forever(log_delivery, stop=stop)
+
+    if config.KAFKA_BOOTSTRAP_SERVERS:
+        from app.kafka_producer import KafkaEventProducer
+
+        producer = KafkaEventProducer(
+            config.KAFKA_BOOTSTRAP_SERVERS,
+            timeout_seconds=config.KAFKA_DELIVERY_TIMEOUT_SECONDS,
+        )
+        deliver = make_kafka_delivery(producer)
+        logger.info("Kafka delivery enabled: topic=%s", config.KAFKA_TOPIC)
+    else:
+        deliver = log_delivery
+        logger.info("Kafka not configured; using logging delivery")
+
+    run_forever(deliver, stop=stop)
 
 
 if __name__ == "__main__":

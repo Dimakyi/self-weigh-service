@@ -1,4 +1,5 @@
 """Configuration. Defaults are illustrative, not real airline rates."""
+import math
 import os
 
 
@@ -47,6 +48,25 @@ TIMEZONE = os.getenv("TIMEZONE", "Africa/Johannesburg")
 WORKER_POLL_SECONDS = float(os.getenv("WORKER_POLL_SECONDS", "2"))
 WORKER_BATCH_SIZE = int(os.getenv("WORKER_BATCH_SIZE", "100"))
 WORKER_LEASE_SECONDS = int(os.getenv("WORKER_LEASE_SECONDS", "60"))
+
+# Kafka delivery settings. An empty broker address keeps logging mode enabled.
+KAFKA_BOOTSTRAP_SERVERS = os.getenv(
+    "KAFKA_BOOTSTRAP_SERVERS", ""
+).strip()
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "selfweigh.events").strip()
+KAFKA_DELIVERY_TIMEOUT_SECONDS = float(
+    os.getenv("KAFKA_DELIVERY_TIMEOUT_SECONDS", "10")
+)
+
+if (
+    not KAFKA_TOPIC
+    or not math.isfinite(KAFKA_DELIVERY_TIMEOUT_SECONDS)
+    or KAFKA_DELIVERY_TIMEOUT_SECONDS <= 0
+):
+    raise RuntimeError(
+        "KAFKA_TOPIC must not be blank and "
+        "KAFKA_DELIVERY_TIMEOUT_SECONDS must be above 0."
+    )
 
 if WORKER_POLL_SECONDS <= 0 or WORKER_BATCH_SIZE < 1 or WORKER_LEASE_SECONDS < 1:
     raise RuntimeError(

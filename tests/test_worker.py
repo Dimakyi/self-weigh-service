@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import pytest
 
 from sqlalchemy import select
 
@@ -107,3 +108,40 @@ def test_log_delivery_writes_event_to_log(caplog):
 
 def test_default_worker_id_fits_column():
     assert 1 <= len(worker.default_worker_id()) <= 100
+
+
+def test_make_kafka_delivery_sends_event_envelope():
+    class FakeKafka:
+        def __init__(self):
+            self.messages = []
+
+        def send(self, topic, key, value):
+            self.messages.append((topic, key, json.loads(value)))
+
+    producer = FakeKafka()
+    deliver = worker.make_kafka_delivery(producer)
+
+    deliver("evt-123", "TRANSACTION_WEIGHED", {"weight_kg": 28})
+
+    assert producer.messages == [
+        (
+            worker.config.KAFKA_TOPIC,
+            "evt-123",
+            {
+                "event_id": "evt-123",
+                "event_type": "TRANSACTION_WEIGHED",
+                "payload": {"weight_kg": 28},
+            },
+        )
+    ]
+
+
+def test_make_kafka_delivery_propagates_broker_failure():
+    class BrokenKafka:
+        def send(self, topic, key, value):
+            raise RuntimeError("broker unavailable")
+
+    deliver = worker.make_kafka_delivery(BrokenKafka())
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        deliver("evt-123", "TRANSACTION_WEIGHED", {})
