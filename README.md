@@ -181,10 +181,10 @@ handling would need more design.
 
 ## Event outbox
 
-Downstream systems (the planned Kafka feed and operations dashboard) need to hear about what happens at the kiosk without the API ever claiming something happened that was not saved. The service uses a **transactional outbox**:
+Downstream systems, including the Kafka event stream and a future operations dashboard, need to hear about what happens at the kiosk without the API ever claiming something happened that was not saved. The service uses a **transactional outbox**:
 
 - **Written with the action.** `enqueue_event` adds a row to `outbox_events` in the caller's own database transaction. The transaction, its audit event and its outbox event are saved in one commit, or none of them are.
-- **Delivered separately.** `publish_pending(deliver)` claims pending events, hands each one to a delivery function and records the outcome. The delivery function is a parameter, so the broker can be swapped in later without touching the outbox.
+- **Delivered separately.** `publish_pending(deliver)` claims pending events, hands each one to the configured delivery function and records the outcome. The worker uses Kafka delivery when `KAFKA_BOOTSTRAP_SERVERS` is configured and logging otherwise.
 - **Safe with several workers.** Claims are short transactions. On PostgreSQL they use `FOR UPDATE SKIP LOCKED`, so two workers don't take the same event. Each claim has a lease (default 60 seconds) and a unique claim token, so a crashed worker's events become available again once the lease expires, and a worker that finishes late cannot overwrite the result of whoever took over.
 - **At-least-once.** An event can be delivered more than once (for example, if a worker dies after delivering but before recording success), so **consumers must deduplicate by event ID**.
 

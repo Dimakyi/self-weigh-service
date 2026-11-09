@@ -76,7 +76,7 @@ The testing framework used to execute automated tests.
 
 Docker packages and runs the application in a consistent environment.
 
-The Docker Compose setup includes the API, PostgreSQL database, and separate outbox worker service.
+The Docker Compose setup includes the API, PostgreSQL database, separate outbox worker service, and Redpanda Kafka-compatible broker.
 
 The Compose configuration is intended for development and testing. Its development credentials and configuration should not be reused as production secrets.
 
