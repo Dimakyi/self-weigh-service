@@ -3,12 +3,18 @@
 import json
 import math
 import hashlib
-from fastapi import Header
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Response,
+)
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, update
@@ -16,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app import audit, config, ledger, pricing, statement_pdf, statements
 from app.db import get_db
+from app.dashboard import get_outbox_statistics
 
 from app.models import (
     Airline,
@@ -38,6 +45,16 @@ from app.outbox import enqueue_event
 
 app = FastAPI(title="Self Weigh Service", description="Weigh. Pay. Drop.")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Admin-Key", "X-Kiosk-Key"],
+)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -627,6 +644,13 @@ def my_transactions(limit: int = 100, airline: Airline = Depends(current_airline
     q = (select(Transaction).where(Transaction.airline_id == airline.id)
          .order_by(Transaction.id.desc()).limit(min(limit, 500)))
     return db.scalars(q).all()
+
+@app.get(
+    "/admin/outbox/statistics",
+    dependencies=[Depends(require_admin)],
+)
+def get_outbox_statistics_endpoint():
+    return get_outbox_statistics()
 
 
 @app.get("/airlines/me/transactions/{tx_id}", response_model=TransactionOut)
