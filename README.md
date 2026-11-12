@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 144 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 49.04s. The 2 skipped tests are PostgreSQL-only concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they run when `DATABASE_URL` points at PostgreSQL, as in the CI workflow. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 166 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 41.34 seconds. The 2 skipped tests are PostgreSQL-specific concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they require a PostgreSQL test environment. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
@@ -32,14 +32,13 @@ This repo is the software side of that idea. The scale is simulated, so no hardw
 - [x] **Step 2:** settlement ledger and `collector` setting (airport collects vs airline collects directly)
 - [x] **Step 3:** hash-chained audit log and authorised fee waivers
 - [x] **Step 4:** monthly airline statements (PDF summary + CSV detail) and cash reconciliation
-- [ ] **Step 5:** events and an operations dashboard
-  - [x] 5a: transactional outbox and a lease-based publisher (see [Event outbox](#event-outbox))
-  - [x] 5b: queue remaining events for waivers, payouts and statements (`FEE_WAIVED`, `PAYOUT_RECORDED` and `STATEMENT_GENERATED` are queued alongside `TRANSACTION_WEIGHED` and `PAYMENT_RECEIVED`)
-  - [ ] 5c: Kafka producer and broker in Docker Compose
-    - [x] Worker process (`python -m app.worker`) and a `worker` service in Docker Compose; events are logged for now
-    - [ ] Kafka producer and broker
-  - [x] 5d: retry limits, exponential backoff and dead-letter handling
-  - [ ] 5e: operations dashboard
+- [x] **Step 5:** Event delivery and operations dashboard
+  - [x] 5a: Transactional outbox and lease-based publisher (see [Event outbox](#event-outbox))
+  - [x] 5b: Queue all business events for weighing, payments, waivers, payouts and statements
+  - [x] 5c: Kafka producer and Redpanda broker integration in Docker Compose
+  - [x] Worker process (`python -m app.worker`) and a `worker` service in Docker Compose
+  - [x] 5d: Retry limits, exponential backoff and dead-letter handling
+  - [x] 5e: React, TypeScript and Vite operations dashboard
 
 ## Flow
 
@@ -181,18 +180,67 @@ handling would need more design.
 
 ## Event outbox
 
-Downstream systems, including the Kafka event stream and a future operations dashboard, need to hear about what happens at the kiosk without the API ever claiming something happened that was not saved. The service uses a **transactional outbox**:
+The service uses a **transactional outbox** to record business events reliably and deliver them separately from the API request.
 
-- **Written with the action.** `enqueue_event` adds a row to `outbox_events` in the caller's own database transaction. The transaction, its audit event and its outbox event are saved in one commit, or none of them are.
-- **Delivered separately.** `publish_pending(deliver)` claims pending events, hands each one to the configured delivery function and records the outcome. The worker uses Kafka delivery when `KAFKA_BOOTSTRAP_SERVERS` is configured and logging otherwise.
-- **Safe with several workers.** Claims are short transactions. On PostgreSQL they use `FOR UPDATE SKIP LOCKED`, so two workers don't take the same event. Each claim has a lease (default 60 seconds) and a unique claim token, so a crashed worker's events become available again once the lease expires, and a worker that finishes late cannot overwrite the result of whoever took over.
-- **At-least-once.** An event can be delivered more than once (for example, if a worker dies after delivering but before recording success), so **consumers must deduplicate by event ID**.
+- **Written with the action.** `enqueue_event` adds a row to `outbox_events` within the caller's database transaction. The business transaction, its audit event and its outbox event are committed together, or none of them are.
+- **Delivered separately.** `publish_pending(deliver)` claims pending events, passes them to the configured delivery function and records the outcome. The worker publishes to Kafka when `KAFKA_BOOTSTRAP_SERVERS` is configured and uses logging delivery otherwise.
+- **Safe with multiple workers.** On PostgreSQL, event claims use `FOR UPDATE SKIP LOCKED` to prevent workers from claiming the same event concurrently. Each claim has a lease and a unique claim token. Expired claims can be recovered, while claim tokens prevent an outdated worker from overwriting a newer claim's result.
+- **At-least-once delivery.** An event may be delivered more than once, for example if a worker stops after broker delivery but before recording success. Downstream consumers must therefore deduplicate events using their event IDs.
 
-**Retries and dead-lettering.** A failed delivery increments `attempts`, stores `last_error` and schedules the next try with exponential backoff (`OUTBOX_RETRY_BASE_SECONDS`, doubling up to `OUTBOX_RETRY_MAX_SECONDS`). After `OUTBOX_MAX_ATTEMPTS` failures the event gets a `dead_lettered_at` timestamp and is no longer claimed. There is no endpoint yet to inspect or requeue dead-lettered events.
+### Kafka and Redpanda delivery
 
-**Worker.** `python -m app.worker` (the `worker` service in Docker Compose) polls the outbox and runs the publisher until it receives SIGINT or SIGTERM. A failed batch, for example a database outage, is logged and retried; it does not stop the loop.
+Kafka integration is implemented in `app/kafka_producer.py` and integrated with the worker in `app/worker.py`.
 
-**Current state:** `TRANSACTION_WEIGHED`, `PAYMENT_RECEIVED`, `FEE_WAIVED`, `PAYOUT_RECORDED` and `STATEMENT_GENERATED` are queued in the same database transaction as their actions. The worker currently delivers events to the log only: there is no Kafka client or broker in `requirements.txt` or `docker-compose.yml` yet.
+The Docker Compose environment includes **Redpanda**, a Kafka-compatible event broker.
+
+The worker uses these configuration variables:
+
+- `KAFKA_BOOTSTRAP_SERVERS`: broker connection address.
+- `KAFKA_TOPIC`: destination topic.
+- `KAFKA_DELIVERY_TIMEOUT_SECONDS`: delivery timeout.
+
+The producer enables idempotence, requests acknowledgements from all in-sync replicas and waits for delivery acknowledgement.
+
+When no Kafka bootstrap address is configured, the worker falls back to logging delivery. Kafka producer idempotence does not replace application-level consumer deduplication.
+
+### Retries and dead-letter handling
+
+A failed delivery increments `attempts`, records `last_error` and schedules another attempt using exponential backoff. The retry delay is controlled by `OUTBOX_RETRY_BASE_SECONDS` and `OUTBOX_RETRY_MAX_SECONDS`.
+
+After the configured `OUTBOX_MAX_ATTEMPTS` limit is reached, the event is marked as dead-lettered and is no longer claimed for normal delivery.
+
+### Worker
+
+Run the worker with:
+
+```powershell
+python -m app.worker
+```
+
+Docker Compose also provides a separate `worker` service. The worker polls the outbox until it receives SIGINT or SIGTERM. A failed batch is logged and retried without permanently stopping the worker loop.
+
+### Operations dashboard
+
+The React, TypeScript and Vite dashboard is available in the `frontend/` directory.
+
+It provides visibility into:
+
+- Backend connection status.
+- Pending, published and dead-lettered event counts.
+- Dead-lettered event details, including event ID, airline ID, event type, attempts, last error and timestamp.
+
+The dashboard uses the protected administrative endpoints:
+
+- `GET /admin/outbox/statistics`
+- `GET /admin/outbox/dead-lettered`
+
+Dashboard data refreshes manually or automatically every 30 seconds. Backend connection health is checked every 10 seconds.
+
+For local development, the Vite proxy uses the `ADMIN_API_KEY` environment variable from `frontend/.env.local` to add the administrative authentication header. Do not commit local secrets.
+
+**Current event types:** `TRANSACTION_WEIGHED`, `PAYMENT_RECEIVED`, `FEE_WAIVED`, `PAYOUT_RECORDED` and `STATEMENT_GENERATED` are queued in the same database transaction as their corresponding business actions.
+
+**Current limitations:** Delivery is at-least-once. A downstream Kafka consumer and consumer-side deduplication have not yet been implemented. The dashboard supports dead-letter inspection, but controlled requeue functionality is still future work. The dashboard is an operational monitoring interface, not a complete production monitoring platform.
 
 ## Simulated passenger verification
 

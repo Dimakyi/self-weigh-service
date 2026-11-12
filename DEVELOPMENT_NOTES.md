@@ -130,11 +130,12 @@ It records events related to weighing, payments, fee waivers, payouts, and state
 
 The hash chain can help detect tampering, but it does not prevent tampering. Its integrity guarantees and operational controls require further testing before formal audit reliance.
 
-### Event Outbox
+
+### Event Outbox and Kafka Delivery
 
 The service uses a transactional outbox implemented in `app/outbox.py` and `app/outbox_publisher.py`.
 
-The outbox allows an event to be saved in the same database transaction as the business action that caused it. This prevents the application from reporting an event as successfully queued when the corresponding database transaction has failed.
+An event is saved in the same database transaction as the business action that caused it. This prevents the application from recording an event independently of the transaction it represents.
 
 The following event types are currently queued:
 
@@ -144,11 +145,11 @@ The following event types are currently queued:
 - `PAYOUT_RECORDED`
 - `STATEMENT_GENERATED`
 
-The publisher uses leases and claim tokens to coordinate event processing. PostgreSQL claims events using `FOR UPDATE SKIP LOCKED`.
+The publisher uses leases, claim tokens and PostgreSQL `FOR UPDATE SKIP LOCKED` to coordinate event processing between workers.
 
-Delivery uses at-least-once semantics. Downstream consumers must deduplicate using event IDs because an event may be delivered more than once.
+Delivery uses **at-least-once semantics**. Downstream consumers must deduplicate events using their event IDs because an event can be delivered more than once.
 
-The publisher also supports:
+The publisher supports:
 
 - Configurable worker batch sizes and polling intervals.
 - Lease-based event claims.
@@ -157,17 +158,52 @@ The publisher also supports:
 - Dead-letter handling after the configured maximum number of failed attempts.
 - Recording delivery errors and retry information.
 
-The separate worker runs with:
+### Kafka and Redpanda Integration
 
-```powershell
-python -m app.worker
-```
+Kafka delivery is implemented in `app/kafka_producer.py` and integrated with the worker in `app/worker.py`.
 
-Docker Compose also provides a worker service.
+The Docker Compose environment includes Redpanda, a Kafka-compatible broker.
 
-**Current limitation:** The worker currently uses a logging delivery stand-in. Kafka producer and broker integration have not yet been implemented. There is also no dedicated dead-letter inspection and requeue endpoint.
+The worker uses:
 
-See the README's "Event outbox" section for the current implementation details.
+- `KAFKA_BOOTSTRAP_SERVERS` to configure the broker connection.
+- `KAFKA_TOPIC` to select the destination topic.
+- `KAFKA_DELIVERY_TIMEOUT_SECONDS` to configure delivery timeouts.
+
+The Kafka producer enables idempotence, requests acknowledgements from all in-sync replicas, and waits for delivery acknowledgement.
+
+When Kafka is configured, the worker publishes events to the broker. When no Kafka bootstrap address is configured, it falls back to logging delivery.
+
+If delivery fails, the outbox records the failure and applies its retry and dead-letter handling. The worker continues processing subsequent batches rather than stopping permanently after a failed batch.
+
+The delivery implementation remains at-least-once from the application's perspective. Kafka producer idempotence does not remove the need for downstream consumers to deduplicate by event ID.
+
+### Operations Dashboard
+
+A React, TypeScript and Vite frontend is available in the `frontend/` directory.
+
+The dashboard connects to the FastAPI backend through the Vite development proxy.
+
+The backend provides protected administrative endpoints for:
+
+- `GET /admin/outbox/statistics`
+- `GET /admin/outbox/dead-lettered`
+
+The statistics endpoint reports total, pending, claimed, retrying, published and dead-lettered events.
+
+The dashboard currently displays:
+
+- Backend service connection status.
+- Pending event count.
+- Published event count.
+- Dead-lettered event count.
+- A table of dead-lettered events, including event ID, airline ID, event type, attempts, last error and timestamp.
+
+The dashboard supports manual refresh and automatic data refresh every 30 seconds. Backend connection health is checked every 10 seconds.
+
+The frontend development proxy uses the local `ADMIN_API_KEY` environment variable to add the administrative authentication header. Local secrets must not be committed to Git.
+
+The dashboard is an operational monitoring interface, not a complete production monitoring or event-management platform.
 
 ## 6. Development Environment
 
@@ -217,7 +253,7 @@ python -m pytest -q
 
 The most recently verified full local test run, using Python 3.12, reported:
 
-**144 passed, 2 skipped, 1 warning in 49.04 seconds.**
+**166 passed, 2 skipped, 1 warning in 41.34 seconds.**
 
 The two skipped tests cover PostgreSQL-specific concurrency behaviour:
 
@@ -302,6 +338,11 @@ The following milestones are confirmed by the recent repository history:
 - Added retry limits, exponential backoff, and dead-letter handling (`5632ac7`).
 - Fixed a retry backoff calculation that could overflow when configured with a very high maximum attempt count (`04d6788`).
 - Updated the README to reflect the current outbox implementation (`fadd68c`).
+- Integrated Kafka-compatible event delivery through Redpanda, including producer acknowledgement and delivery failure handling.
+- Added a React, TypeScript and Vite operations dashboard for monitoring backend health and outbox event statistics (`1c840fd`).
+- Added a Vite development proxy to connect the frontend to the protected backend API without exposing the administrative key in frontend source code.
+- Verified the frontend with `npm run lint` and `npm run build`.
+- Rebased the dashboard work onto the latest remote `main` branch and successfully pushed the synchronised history.
 
 Run `git log --oneline` for the full repository history. Git history is the authority if this milestone list falls behind.
 
@@ -320,55 +361,65 @@ We will follow these principles throughout development:
 - **Build for maintainability:** favour clear, readable code over unnecessary complexity.
 - **Preserve working functionality:** avoid unnecessary rewrites and make changes deliberately.
 
+
 ## 12. Future Development Direction
 
-Future work should be driven by inspection of the current code, test coverage, and project requirements.
+Future work should be driven by inspection of the current code, test coverage, operational requirements, and project priorities.
 
-The remaining outbox roadmap includes:
+The core outbox publishing workflow, Kafka-compatible delivery integration, and initial operations dashboard have been implemented. The following improvements remain candidates for future development.
 
-- Add a Kafka producer and broker integration.
-- Replace the current logging delivery stand-in with actual downstream event delivery.
-- Build the operations dashboard.
-- Consider dead-letter inspection and controlled requeue functionality.
+### Event Delivery and Operations
 
-Other areas to investigate include:
+- Build a downstream Kafka consumer to demonstrate and verify end-to-end event processing.
+- Add consumer-side event deduplication and processing guarantees.
+- Consider dead-letter event inspection and controlled requeue functionality in the dashboard.
+- Improve operational monitoring, alerting, and delivery visibility.
+- Evaluate production broker security, topic configuration, and deployment requirements.
 
-- Splitting `app/main.py` into smaller routers and modules.
-- Refunds and corrections.
-- Mid-period collector changes.
-- Per-kiosk cash tracking; current reconciliation uses one combined total.
-- Secrets management and deployment configuration beyond the local Docker Compose setup.
-- Reviewing error handling, logging, monitoring, backups, and recovery.
-- Further database migration and concurrency testing.
-- Expanding test coverage for important business and failure scenarios.
+### Application Improvements
+
+- Consider splitting `app/main.py` into smaller routers and modules.
+- Implement refunds and transaction corrections.
+- Support mid-period collector changes.
+- Consider per-kiosk cash tracking; current reconciliation uses one combined total.
+- Improve secrets management and deployment configuration beyond the local Docker Compose setup.
+- Review error handling, logging, monitoring, backups, and recovery procedures.
+- Expand database migration and concurrency testing.
+- Expand automated tests for important business workflows and failure scenarios.
 
 These are development opportunities, not claims that the work has already been completed.
 
 ## 13. Current Working Agreement
 
-We will continue working together step by step.
+Development will continue incrementally, with each change inspected, tested, reviewed, and documented before it is committed and pushed to GitHub.
 
-For each meaningful change, we will:
+For each meaningful change:
 
-1. Understand what we are changing and why.
-2. Agree on the next action.
-3. Run the required command or edit.
-4. Check the result.
-5. Test the application where appropriate.
-6. Review the diff.
-7. Commit the verified change.
-8. Push it to GitHub and confirm the result.
+1. Understand the proposed change and its purpose.
+2. Inspect the relevant code and existing behaviour.
+3. Implement one focused change at a time.
+4. Run the appropriate checks and tests.
+5. Review the resulting diff.
+6. Stage only the intended files.
+7. Commit with a clear, descriptive message.
+8. Push to GitHub and verify synchronisation.
 
-We will not claim that a change has been committed, pushed, or verified until the command output confirms it.
+Changes will only be described as committed, pushed, or verified when the relevant command output confirms the result.
 
-We will also avoid staging unrelated files, backups, diagnostic output, or local database files.
+Unrelated files, backups, diagnostic output, and local database files must not be included in a commit.
 
 ## Summary
 
-Self-Weigh Service is an evolving API project. It now includes baggage and pricing workflows, multi-airline functionality, financial records, audit logging, database migrations, and a transactional event outbox with a separate worker, retry handling, and dead-letter support.
+Self-Weigh Service is an evolving baggage weighing and payment service.
 
-The current event delivery implementation still uses a logging stand-in. Kafka integration and the operations dashboard remain future work.
+The project includes baggage weighing and pricing workflows, multi-airline functionality, passenger verification, financial records, audit logging, database migrations, and a transactional event outbox.
 
-Our focus is to develop the service incrementally, understand the technical decisions behind it, preserve working functionality, test changes, and maintain a clear history in GitHub.
+The outbox is supported by a separate worker with retry handling, exponential backoff, dead-letter processing, and Kafka-compatible event delivery through Redpanda.
+
+A React, TypeScript, and Vite operations dashboard provides visibility into backend connectivity and outbox event statistics.
+
+The latest recorded full local test run reported 166 passed, 2 skipped, and 1 warning. PostgreSQL-specific concurrency tests still require verification in the PostgreSQL test environment.
+
+The project is developed incrementally, with emphasis on understanding technical decisions, preserving working functionality, testing changes, and maintaining a clear Git history.
 
 This document records the project's direction and development practices. The current source code, tests, configuration, README, and Git history remain the authorities for determining which features are actually implemented and verified.
