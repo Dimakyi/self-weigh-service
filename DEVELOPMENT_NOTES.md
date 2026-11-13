@@ -1,4 +1,4 @@
-# SELF-WEIGH SERVICE
+﻿# SELF-WEIGH SERVICE
 ## Project Overview, Technical Decisions and Development Journey
 
 ## 1. Project Overview
@@ -355,6 +355,8 @@ The following milestones are confirmed by the recent repository history:
 - Verified the frontend with `npm run lint` and `npm run build`.
 - Rebased the dashboard work onto the latest remote `main` branch and successfully pushed the synchronised history.
 - Added an admin-protected airline API-key rotation endpoint (`POST /airlines/{airline_id}/rotate-key`), with tests covering successful rotation, old-key invalidation, preserved transaction history, authentication failures, and unknown airline IDs (`ce95db1`).
+- Added offset-based pagination to the admin dead-letter listing, including negative-offset validation, deterministic ordering, and API tests (`dba73f9`).
+- Documented a successful manual Redpanda broker outage recovery test. The API accepted a transaction during the outage, and the existing worker delivered its event after broker recovery without a manual restart (`b782098`). Delivery remains at-least-once.
 
 Run `git log --oneline` for the full repository history. Git history is the authority if this milestone list falls behind.
 
@@ -430,7 +432,9 @@ The outbox is supported by a separate worker with retry handling, exponential ba
 
 A React, TypeScript, and Vite operations dashboard provides visibility into backend connectivity and outbox event statistics.
 
-The latest recorded full local test run reported 169 passed, 2 skipped, and 1 warning. PostgreSQL-specific concurrency tests still require verification in the PostgreSQL test environment.
+The admin dead-letter listing supports offset pagination with deterministic ordering. A manual integration test also demonstrated successful outbox delivery recovery after a Redpanda broker outage.
+
+The latest full local pytest run collected 171 tests: 169 passed, 2 skipped, and 1 warning. PostgreSQL-specific concurrency tests still require verification in the PostgreSQL test environment.
 
 The project is developed incrementally, with emphasis on understanding technical decisions, preserving working functionality, testing changes, and maintaining a clear Git history.
 
