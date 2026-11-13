@@ -1,0 +1,134 @@
+# Self-Weigh Service — Temporary Polish Backlog
+
+**Status:** Outstanding improvements  
+**Purpose:** Track technical issues and areas that need further refinement before considering the project more complete.
+
+## 1. Outbox lease duration and batch processing
+
+**Issue**
+
+- Each Kafka send can wait up to 10 seconds.
+- The worker processes batches of up to 100 events under a 60-second lease.
+- If Kafka is unavailable, the lease may expire before the entire batch has been processed.
+- Remaining events may not have their failures recorded correctly, and events may be sent more than once.
+
+**Possible improvements**
+
+- Reduce the worker batch size.
+- Increase the lease duration.
+- Implement lease renewal while processing a batch.
+
+**Validation needed**
+
+- Test with Kafka unavailable for longer than the current lease duration.
+- Confirm that failed events are recorded correctly.
+- Confirm that events can be reclaimed and retried safely.
+
+## 2. Kafka producer timeouts and duplicate delivery
+
+**Issue**
+
+A send that times out may remain queued in the producer and be delivered later. This can result in duplicate event delivery.
+
+**Required improvement**
+
+Ensure downstream consumers handle repeated events safely by checking event IDs and skipping events that have already been processed.
+
+**Validation needed**
+
+- Simulate a producer timeout.
+- Verify that duplicate event IDs are not processed twice by consumers.
+- Confirm that legitimate new events are still processed.
+
+**Important:** The system uses at-least-once delivery. Duplicate delivery must be handled through consumer-side idempotency rather than assuming exactly-once delivery.
+
+## 3. Docker startup dependencies
+
+**Issue**
+
+The worker starts as soon as the API container starts, rather than waiting for the API to become healthy.
+
+This creates a possibility that the worker starts before database migrations have completed.
+
+**Possible improvement**
+
+- Add a health check to the API service.
+- Review Docker Compose startup dependencies.
+- Ensure dependent services wait for the required health conditions.
+
+**Validation needed**
+
+- Start the application from a fresh environment.
+- Confirm the worker does not begin processing before the required services are ready.
+- Confirm normal startup and recovery behaviour.
+
+## 4. Negative limit validation — airline transactions endpoint
+
+**Endpoint**
+
+`GET /airlines/me/transactions`
+
+**Current status**
+
+The code was changed to prevent the limit from going below 1.
+
+**Outstanding concern**
+
+The change was tested using SQLite only. PostgreSQL-specific behaviour still needs confirmation.
+
+**Validation needed**
+
+- Run the relevant tests against PostgreSQL.
+- Test a negative limit.
+- Confirm the API returns the expected validation response.
+- Confirm normal pagination still works.
+
+## 5. Refactor `app/main.py`
+
+**Current status**
+
+`app/main.py` is approximately 960 lines long.
+
+**Improvement needed**
+
+Split the application into smaller, logically organised routers.
+
+**Suggested areas**
+
+- Airlines
+- Kiosk
+- Statements
+- Admin
+
+**Validation needed**
+
+- Preserve existing endpoint paths and behaviour.
+- Keep authentication and authorisation rules intact.
+- Run the complete test suite after each refactoring stage.
+- Confirm the OpenAPI documentation still exposes the expected endpoints.
+
+---
+
+## Working rules
+
+For each improvement:
+
+1. Inspect the existing implementation before changing anything.
+2. Make one small, focused change at a time.
+3. Run the relevant tests.
+4. Run the full test suite where appropriate.
+5. Review the Git diff.
+6. Stage only the intended files.
+7. Commit with a clear message.
+8. Push to GitHub.
+9. Confirm the working tree and remote are synchronised.
+
+## Completion tracking
+
+- [ ] Outbox lease and batch processing improvements
+- [ ] Kafka timeout and duplicate-delivery handling
+- [ ] Docker startup health checks
+- [ ] PostgreSQL validation for transaction limits
+- [ ] `main.py` router refactoring
+
+**Note:** This is a temporary engineering backlog, not a record of completed work. Items should only be marked complete after implementation and verification.
