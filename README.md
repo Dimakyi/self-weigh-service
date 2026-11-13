@@ -9,7 +9,7 @@ excess fee (card, mobile or cash) and proceeds to bag drop.
 
 **Tech stack:** Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, SQLite for local development, Docker Compose, Pydantic and ReportLab.
 
-**Testing:** 166 automated tests passed and 2 were skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The test run completed in 41.34 seconds. The 2 skipped tests are PostgreSQL-specific concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they require a PostgreSQL test environment. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
+**Testing:** 169 automated tests passed and 2 skipped locally using Python 3.12, with 1 deprecation warning from the Starlette/AnyIO test-client dependency. The 2 skipped tests are PostgreSQL-specific concurrency tests (payout row-locking and outbox `SKIP LOCKED`); they require a PostgreSQL test environment. Run the suite with `.venv312\Scripts\python.exe -m pytest -q` on Windows, or `python -m pytest -q` in an environment with the project dependencies installed.
 
 ## The problem
 
@@ -60,7 +60,7 @@ currency, collector) and every transaction carries an `airline_id`.
 | Airline | `X-Api-Key` | Read its own profile, balance, ledger, transactions, audit log and statements |
 | Staff | `X-Staff-Key` | Waive eligible fees using a personal key, with a required reason and per-person limit |
 
-- An airline's key is shown once at creation; only its SHA-256 hash is stored.
+- An airline's API key is shown once at creation or rotation; only its SHA-256 hash is stored. Administrators can rotate an airline's key through `POST /airlines/{airline_id}/rotate-key`. Rotation invalidates the previous key without deleting the airline or its transaction history.
 - Asking for another airline's transaction returns 404, the same as a missing one.
 - Pricing is a pure function: `quote(weight_kg, policy)`.
 - In a real kiosk the airline would come from scanning the boarding pass or bag tag. Here it is passed as `airline_code`.

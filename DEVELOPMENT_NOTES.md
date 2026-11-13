@@ -109,6 +109,16 @@ A transaction record does not by itself prove that a real payment has been proce
 - API-key protection for selected operations.
 - Separation of access between authorised parties.
 - Kiosk and staff-management authentication safeguards where implemented.
+- Admin-protected airline API-key rotation through `POST /airlines/{airline_id}/rotate-key`.
+
+When an airline key is rotated:
+
+- The administrator must provide a valid admin key.
+- A new airline API key is generated.
+- The previous key is invalidated.
+- The new key is returned in the response and should be securely saved because it is only shown once.
+- Only the hash of the new key is stored in the database.
+- The airline record and its existing transaction history are preserved.
 
 Authentication and authorisation should continue to be reviewed for secure storage, rotation, logging, and appropriate permissions.
 
@@ -253,7 +263,7 @@ python -m pytest -q
 
 The most recently verified full local test run, using Python 3.12, reported:
 
-**166 passed, 2 skipped, 1 warning in 41.34 seconds.**
+**169 passed, 2 skipped, 1 warning.**
 
 The two skipped tests cover PostgreSQL-specific concurrency behaviour:
 
@@ -341,8 +351,10 @@ The following milestones are confirmed by the recent repository history:
 - Integrated Kafka-compatible event delivery through Redpanda, including producer acknowledgement and delivery failure handling.
 - Added a React, TypeScript and Vite operations dashboard for monitoring backend health and outbox event statistics (`1c840fd`).
 - Added a Vite development proxy to connect the frontend to the protected backend API without exposing the administrative key in frontend source code.
+
 - Verified the frontend with `npm run lint` and `npm run build`.
 - Rebased the dashboard work onto the latest remote `main` branch and successfully pushed the synchronised history.
+- Added an admin-protected airline API-key rotation endpoint (`POST /airlines/{airline_id}/rotate-key`), with tests covering successful rotation, old-key invalidation, preserved transaction history, authentication failures, and unknown airline IDs (`ce95db1`).
 
 Run `git log --oneline` for the full repository history. Git history is the authority if this milestone list falls behind.
 
@@ -418,7 +430,7 @@ The outbox is supported by a separate worker with retry handling, exponential ba
 
 A React, TypeScript, and Vite operations dashboard provides visibility into backend connectivity and outbox event statistics.
 
-The latest recorded full local test run reported 166 passed, 2 skipped, and 1 warning. PostgreSQL-specific concurrency tests still require verification in the PostgreSQL test environment.
+The latest recorded full local test run reported 169 passed, 2 skipped, and 1 warning. PostgreSQL-specific concurrency tests still require verification in the PostgreSQL test environment.
 
 The project is developed incrementally, with emphasis on understanding technical decisions, preserving working functionality, testing changes, and maintaining a clear Git history.
 
