@@ -838,3 +838,65 @@ def test_requeue_same_event_twice_is_rejected(
 
     assert first.status_code == 200
     assert second.status_code == 409
+
+def test_airline_key_rotation_invalidates_old_key_and_preserves_access(client, make_airline):
+    airline = make_airline("SA")
+    old_key = airline["api_key"]
+
+    # Create a transaction before rotating the key.
+    transaction = weigh(client, "SA", 25).json()
+
+    response = client.post(
+        f"/airlines/{airline['id']}/rotate-key",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 200
+    new_key = response.json()["api_key"]
+    assert new_key != old_key
+
+    # Old key must no longer authenticate.
+    old_access = client.get(
+        "/airlines/me",
+        headers={"X-Api-Key": old_key},
+    )
+    assert old_access.status_code == 401
+
+    # New key must authenticate.
+    new_access = client.get(
+        "/airlines/me",
+        headers={"X-Api-Key": new_key},
+    )
+    assert new_access.status_code == 200
+
+    # Existing transaction history must remain accessible.
+    history = client.get(
+        "/airlines/me/transactions",
+        headers={"X-Api-Key": new_key},
+    )
+    assert history.status_code == 200
+    assert any(item["id"] == transaction["id"] for item in history.json())
+
+
+def test_airline_key_rotation_requires_admin_key(client, make_airline):
+    airline = make_airline("SA")
+
+    missing_key = client.post(
+        f"/airlines/{airline['id']}/rotate-key"
+    )
+    wrong_key = client.post(
+        f"/airlines/{airline['id']}/rotate-key",
+        headers=KIOSK,
+    )
+
+    assert missing_key.status_code == 401
+    assert wrong_key.status_code == 401
+
+
+def test_airline_key_rotation_rejects_unknown_airline(client):
+    response = client.post(
+        "/airlines/99999/rotate-key",
+        headers=ADMIN,
+    )
+
+    assert response.status_code == 404

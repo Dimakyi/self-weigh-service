@@ -326,6 +326,27 @@ def create_airline(body: AirlineCreate, db: Session = Depends(get_db)):
     db.refresh(airline)
     return AirlineCreated(**AirlineOut.model_validate(airline).model_dump(), api_key=key)
 
+@app.post(
+    "/airlines/{airline_id}/rotate-key",
+    response_model=AirlineCreated,
+    dependencies=[Depends(require_admin)],
+)
+def rotate_airline_key(airline_id: int, db: Session = Depends(get_db)):
+    airline = db.get(Airline, airline_id)
+    if airline is None:
+        raise HTTPException(404, "Airline not found")
+
+    key = new_airline_key()
+    airline.api_key_hash = hash_key(key)
+
+    db.commit()
+    db.refresh(airline)
+
+    return AirlineCreated(
+        **AirlineOut.model_validate(airline).model_dump(),
+        api_key=key,
+    )
+
 
 @app.get("/airlines", response_model=list[AirlineOut], dependencies=[Depends(require_admin)])
 def list_airlines(db: Session = Depends(get_db)):
@@ -645,6 +666,7 @@ def my_transactions(limit: int = 100, airline: Airline = Depends(current_airline
          .order_by(Transaction.id.desc()).limit(min(limit, 500)))
     return db.scalars(q).all()
 
+
 @app.get(
     "/admin/outbox/statistics",
     dependencies=[Depends(require_admin)],
@@ -869,6 +891,7 @@ def list_dead_lettered_events(
         .offset(offset)
     )
     return db.scalars(q).all()
+
 
 @app.post(
     "/admin/outbox/{event_id}/requeue",
